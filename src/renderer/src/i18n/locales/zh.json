@@ -6653,7 +6653,9 @@
           "builtin_themes": "内置",
           "imported_from": "从 {{value0}} 导入",
           "imported_themes": "已导入",
-          "search_terminal_themes": "搜索终端主题"
+          "search_terminal_themes": "搜索终端主题",
+          "plugin_themes": "插件主题",
+          "contributed_by": "由 {{value0}} 提供"
         },
         "SettingsSidebar": {
           "e0900f83e7": "SSH",
@@ -9425,7 +9427,9 @@
           "viewAdvisory": "查看公告",
           "rollback": "回滚",
           "noDescription": "No description provided.",
-          "reviewAndEnable": "Review & enable"
+          "reviewAndEnable": "Review & enable",
+          "inUse": "In use",
+          "useTheme": "Use theme"
         },
         "PluginsSettingsSection": {
           "loadFailed": "无法加载插件。",
@@ -9445,6 +9449,7 @@
           "settingsUpdateFailed": "无法保存插件设置。",
           "rollbackFailed": "无法回滚此插件。可能没有可用的上一不可变版本。",
           "noInstalledResults": "No installed plugins match this search.",
+          "themeApplyFailed": "The plugin was enabled, but Orca could not apply its terminal theme.",
           "noInstalledResultsTitle": "No matching plugins",
           "emptyTitle": "No plugins installed yet"
         },
@@ -9469,6 +9474,18 @@
           "invalidManifest": "orca-plugin.json 无效。请修复后刷新插件。",
           "invalidArtifact": "声明的工作进程或面板文件缺失或不安全。请修复插件文件后刷新。",
           "consentChanged": "插件在你查看时发生了更改。请关闭此对话框并查看更新后的权限。"
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "插件主题",
+            "description": "应用已启用的 Orca 插件所提供的主题。",
+            "builtIn": "使用内置主题"
+          },
+          "pluginIconTheme": {
+            "title": "图标主题",
+            "description": "使用已启用 Orca 插件提供的文件、文件夹、侧边栏和智能体图标。",
+            "builtIn": "使用内置图标"
+          }
         },
         "PluginVmRecipeConsentPreview": {
           "create": "创建",
@@ -9524,6 +9541,9 @@
           "install": "Install"
         },
         "PluginMarketplacePreviewDialog": {
+          "themes": "{{value0}} 个应用主题",
+          "iconThemes": "{{value0}} 个图标主题",
+          "terminalThemes": "{{value0}} 个终端主题",
           "languagePacks": "{{value0}} 个语言包",
           "commands": "{{value0}} 个命令",
           "keybindings": "{{value0}} 个键盘快捷键",
@@ -9549,6 +9569,9 @@
           "provenance": "Reviewed source",
           "close": "Close",
           "upToDate": "Up to date",
+          "themesOne": "1 app theme",
+          "iconThemesOne": "1 icon theme",
+          "terminalThemesOne": "1 terminal theme",
           "languagePacksOne": "1 language pack",
           "commandsOne": "1 command",
           "keybindingsOne": "1 keyboard shortcut",

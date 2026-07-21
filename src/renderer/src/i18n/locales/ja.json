@@ -6690,7 +6690,9 @@
           "search_terminal_themes": "terminal テーマを検索",
           "cb330ef7f8": "/{{value0}}",
           "c822571b2e": " 「{{value0}}」に一致",
-          "3119c012a5": "文字列"
+          "3119c012a5": "文字列",
+          "plugin_themes": "プラグインテーマ",
+          "contributed_by": "{{value0}} による提供"
         },
         "SettingsSidebar": {
           "e0900f83e7": "SSH",
@@ -9425,7 +9427,9 @@
           "viewAdvisory": "勧告を表示",
           "rollback": "ロールバック",
           "noDescription": "No description provided.",
-          "reviewAndEnable": "Review & enable"
+          "reviewAndEnable": "Review & enable",
+          "inUse": "In use",
+          "useTheme": "Use theme"
         },
         "PluginsSettingsSection": {
           "loadFailed": "プラグインを読み込めませんでした。",
@@ -9445,6 +9449,7 @@
           "settingsUpdateFailed": "プラグイン設定を保存できませんでした。",
           "rollbackFailed": "このプラグインをロールバックできませんでした。以前の不変バージョンが存在しない可能性があります。",
           "noInstalledResults": "No installed plugins match this search.",
+          "themeApplyFailed": "The plugin was enabled, but Orca could not apply its terminal theme.",
           "noInstalledResultsTitle": "No matching plugins",
           "emptyTitle": "No plugins installed yet"
         },
@@ -9469,6 +9474,18 @@
           "invalidManifest": "orca-plugin.jsonが無効です。修正してからプラグインを更新してください。",
           "invalidArtifact": "宣言されたワーカーまたはパネルのファイルがないか、安全ではありません。ファイルを修正してから更新してください。",
           "consentChanged": "確認中にプラグインが変更されました。このダイアログを閉じて、更新された権限を確認してください。"
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "プラグインテーマ",
+            "description": "有効な Orca プラグインのテーマを適用します。",
+            "builtIn": "組み込みテーマを使用"
+          },
+          "pluginIconTheme": {
+            "title": "アイコンテーマ",
+            "description": "有効な Orca プラグインのファイル、フォルダー、サイドバー、エージェント用アイコンを使用します。",
+            "builtIn": "組み込みアイコンを使用"
+          }
         },
         "PluginVmRecipeConsentPreview": {
           "create": "作成",
@@ -9524,6 +9541,9 @@
           "install": "Install"
         },
         "PluginMarketplacePreviewDialog": {
+          "themes": "{{value0}} 件のアプリテーマ",
+          "iconThemes": "{{value0}} 件のアイコンテーマ",
+          "terminalThemes": "{{value0}} 件のターミナルテーマ",
           "languagePacks": "{{value0}} 件の言語パック",
           "commands": "{{value0}} 件のコマンド",
           "keybindings": "{{value0}} 件のキーボードショートカット",
@@ -9549,6 +9569,9 @@
           "provenance": "Reviewed source",
           "close": "Close",
           "upToDate": "Up to date",
+          "themesOne": "1 app theme",
+          "iconThemesOne": "1 icon theme",
+          "terminalThemesOne": "1 terminal theme",
           "languagePacksOne": "1 language pack",
           "commandsOne": "1 command",
           "keybindingsOne": "1 keyboard shortcut",

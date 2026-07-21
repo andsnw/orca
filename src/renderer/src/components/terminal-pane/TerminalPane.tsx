@@ -81,6 +81,7 @@ import {
 import { useSystemPrefersDark } from './use-system-prefers-dark'
 import { useTerminalPaneGlobalEffects } from './use-terminal-pane-global-effects'
 import { useTerminalPaneLifecycle } from './use-terminal-pane-lifecycle'
+import { usePluginTerminalThemeStore } from '@/store/plugin-terminal-themes'
 import { useTerminalPaneContextMenu } from './use-terminal-pane-context-menu'
 import {
   detachTerminalPaneToTab,
@@ -951,6 +952,7 @@ export default function TerminalPane({
   onPtyExitRef.current = onPtyExit
 
   const systemPrefersDark = useSystemPrefersDark()
+  const pluginTerminalThemes = usePluginTerminalThemeStore((state) => state.themes)
   const dispatchNotification = useNotificationDispatch(worktreeId)
   const setCacheTimerStartedAt = useAppStore((store) => store.setCacheTimerStartedAt)
 
@@ -1399,6 +1401,7 @@ export default function TerminalPane({
     isActive,
     isVisible: isRendererVisible,
     systemPrefersDark,
+    pluginTerminalThemes,
     settings,
     settingsRef,
     requestOpenLinksInAppPreference,

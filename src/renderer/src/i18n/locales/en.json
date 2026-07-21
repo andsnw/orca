@@ -6728,7 +6728,9 @@
           "search_terminal_themes": "Search terminal themes",
           "cb330ef7f8": " of {{value0}}",
           "c822571b2e": " matching \"{{value0}}\"",
-          "3119c012a5": "string"
+          "3119c012a5": "string",
+          "plugin_themes": "Plugin themes",
+          "contributed_by": "Contributed by {{value0}}"
         },
         "SettingsSidebar": {
           "e0900f83e7": "SSH",
@@ -9448,7 +9450,9 @@
           "viewAdvisory": "View advisory",
           "rollback": "Roll back",
           "noDescription": "No description provided.",
-          "reviewAndEnable": "Review & enable"
+          "reviewAndEnable": "Review & enable",
+          "inUse": "In use",
+          "useTheme": "Use theme"
         },
         "PluginsSettingsSection": {
           "loadFailed": "Could not load plugins.",
@@ -9468,6 +9472,7 @@
           "settingsUpdateFailed": "Could not save plugin settings.",
           "rollbackFailed": "Could not roll back this plugin. A previous immutable version may not be available.",
           "noInstalledResults": "No installed plugins match this search.",
+          "themeApplyFailed": "The plugin was enabled, but Orca could not apply its terminal theme.",
           "noInstalledResultsTitle": "No matching plugins",
           "emptyTitle": "No plugins installed yet"
         },
@@ -9492,6 +9497,18 @@
           "invalidManifest": "orca-plugin.json is invalid. Fix it, then refresh plugins.",
           "invalidArtifact": "A declared worker or panel file is missing or unsafe. Fix the plugin files, then refresh.",
           "consentChanged": "The plugin changed while you were reviewing it. Close this dialog and review the updated permissions."
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "Plugin theme",
+            "description": "Apply a theme from an enabled Orca plugin.",
+            "builtIn": "Use built-in theme"
+          },
+          "pluginIconTheme": {
+            "title": "Icon theme",
+            "description": "Use file, folder, sidebar, and agent icons from an enabled Orca plugin.",
+            "builtIn": "Use built-in icons"
+          }
         },
         "PluginVmRecipeConsentPreview": {
           "create": "Create",
@@ -9547,6 +9564,9 @@
           "install": "Install"
         },
         "PluginMarketplacePreviewDialog": {
+          "themes": "{{value0}} app themes",
+          "iconThemes": "{{value0}} icon themes",
+          "terminalThemes": "{{value0}} terminal themes",
           "languagePacks": "{{value0}} language packs",
           "commands": "{{value0}} commands",
           "keybindings": "{{value0}} keyboard shortcuts",
@@ -9572,6 +9592,9 @@
           "provenance": "Reviewed source",
           "close": "Close",
           "upToDate": "Up to date",
+          "themesOne": "1 app theme",
+          "iconThemesOne": "1 icon theme",
+          "terminalThemesOne": "1 terminal theme",
           "languagePacksOne": "1 language pack",
           "commandsOne": "1 command",
           "keybindingsOne": "1 keyboard shortcut",

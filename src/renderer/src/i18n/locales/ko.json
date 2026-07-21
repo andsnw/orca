@@ -6653,7 +6653,9 @@
           "builtin_themes": "기본 제공",
           "imported_from": "{{value0}}에서 가져옴",
           "imported_themes": "가져옴",
-          "search_terminal_themes": "terminal 테마 검색"
+          "search_terminal_themes": "terminal 테마 검색",
+          "plugin_themes": "플러그인 테마",
+          "contributed_by": "{{value0}}에서 제공"
         },
         "SettingsSidebar": {
           "e0900f83e7": "SSH",
@@ -9425,7 +9427,9 @@
           "viewAdvisory": "권고 보기",
           "rollback": "롤백",
           "noDescription": "No description provided.",
-          "reviewAndEnable": "Review & enable"
+          "reviewAndEnable": "Review & enable",
+          "inUse": "In use",
+          "useTheme": "Use theme"
         },
         "PluginsSettingsSection": {
           "loadFailed": "플러그인을 불러올 수 없습니다.",
@@ -9445,6 +9449,7 @@
           "settingsUpdateFailed": "플러그인 설정을 저장할 수 없습니다.",
           "rollbackFailed": "이 플러그인을 롤백하지 못했습니다. 이전 불변 버전을 사용할 수 없을 수 있습니다.",
           "noInstalledResults": "No installed plugins match this search.",
+          "themeApplyFailed": "The plugin was enabled, but Orca could not apply its terminal theme.",
           "noInstalledResultsTitle": "No matching plugins",
           "emptyTitle": "No plugins installed yet"
         },
@@ -9469,6 +9474,18 @@
           "invalidManifest": "orca-plugin.json이 올바르지 않습니다. 수정한 후 플러그인을 새로 고치세요.",
           "invalidArtifact": "선언된 워커 또는 패널 파일이 없거나 안전하지 않습니다. 파일을 수정한 후 새로 고치세요.",
           "consentChanged": "검토하는 동안 플러그인이 변경되었습니다. 이 대화상자를 닫고 업데이트된 권한을 검토하세요."
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "플러그인 테마",
+            "description": "활성화된 Orca 플러그인의 테마를 적용합니다.",
+            "builtIn": "기본 제공 테마 사용"
+          },
+          "pluginIconTheme": {
+            "title": "아이콘 테마",
+            "description": "활성화된 Orca 플러그인의 파일, 폴더, 사이드바 및 에이전트 아이콘을 사용합니다.",
+            "builtIn": "기본 제공 아이콘 사용"
+          }
         },
         "PluginVmRecipeConsentPreview": {
           "create": "생성",
@@ -9524,6 +9541,9 @@
           "install": "Install"
         },
         "PluginMarketplacePreviewDialog": {
+          "themes": "앱 테마 {{value0}}개",
+          "iconThemes": "아이콘 테마 {{value0}}개",
+          "terminalThemes": "터미널 테마 {{value0}}개",
           "languagePacks": "언어 팩 {{value0}}개",
           "commands": "명령 {{value0}}개",
           "keybindings": "키보드 단축키 {{value0}}개",
@@ -9549,6 +9569,9 @@
           "provenance": "Reviewed source",
           "close": "Close",
           "upToDate": "Up to date",
+          "themesOne": "1 app theme",
+          "iconThemesOne": "1 icon theme",
+          "terminalThemesOne": "1 terminal theme",
           "languagePacksOne": "1 language pack",
           "commandsOne": "1 command",
           "keybindingsOne": "1 keyboard shortcut",

@@ -13810,5 +13810,10 @@
       "certificateChallengeUnavailable": "This certificate request is no longer available. Retry the page to request a new one.",
       "certificateProceedFailed": "Orca could not approve this certificate request. Retry the page and try again."
     }
+  },
+  "hangWatchdog": {
+    "recoveredNotice": {
+      "body": "Orca가 시스템 멈춤에서 복구되어 다시 시작되었습니다"
+    }
   }
 }

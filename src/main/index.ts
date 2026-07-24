@@ -2,7 +2,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import os from 'node:os'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, type Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, type Tray } from 'electron'
 import { electronApp, is } from '@electron-toolkit/utils'
 import * as QRCode from 'qrcode'
 import {
@@ -210,6 +210,12 @@ import {
   recordCrashBreadcrumb
 } from './crash-reporting/crash-breadcrumb-store'
 import { recordDurableCrashBreadcrumb } from './crash-reporting/durable-crash-breadcrumb'
+import { installMainThreadHangWatchdog } from './hang-watchdog/main-thread-hang-watchdog'
+import {
+  consumeHangRecoveryMarker,
+  hangRecoveryMarkerPath
+} from './hang-watchdog/hang-recovery-marker'
+import { translateMain } from './i18n/main-i18n'
 import { getMainProcessLifecycleIdentity } from './crash-reporting/main-process-lifecycle-identity'
 import { CrashReportStore } from './crash-reporting/crash-report-store'
 import {
@@ -1770,6 +1776,25 @@ function shouldSuppressCodexAutoApprovalSyntheticTitleFromHook(args: {
 
 app.whenReady().then(async () => {
   logStartupMilestone('app-ready')
+  installMainThreadHangWatchdog({ userDataPath: getCanonicalUserDataPath() })
+  const hangRecovery = consumeHangRecoveryMarker(hangRecoveryMarkerPath(getCanonicalUserDataPath()))
+  if (hangRecovery) {
+    recordDurableCrashBreadcrumb('main_thread_hang_recovered', {
+      unresponsiveMs: hangRecovery.unresponsiveMs,
+      previousPid: hangRecovery.parentPid
+    })
+    try {
+      new Notification({
+        title: 'Orca',
+        body: translateMain(
+          'hangWatchdog.recoveredNotice.body',
+          'Orca recovered from a system freeze and restarted'
+        )
+      }).show()
+    } catch {
+      // Notification is best-effort; the breadcrumb already records the recovery.
+    }
+  }
   // Why: install certificate decisions before any webview or headless window issues its first TLS request.
   app.on(
     'certificate-error',

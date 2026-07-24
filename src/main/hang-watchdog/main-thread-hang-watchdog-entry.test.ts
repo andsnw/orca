@@ -75,7 +75,11 @@ describe('recoverFrozenParent', () => {
       delete process.env.ELECTRON_RUN_AS_NODE
       delete process.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS
     }
-    const options = spawnMock.mock.calls[0]?.[2] as { env: Record<string, string | undefined> }
+    const [, , options] = spawnMock.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { env: Record<string, string | undefined> }
+    ]
     // Why: `open` propagates this env to the relaunched app; ELECTRON_RUN_AS_NODE would boot it as bare Node and it would exit immediately.
     expect(options.env.ELECTRON_RUN_AS_NODE).toBeUndefined()
     expect(options.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS).toBeUndefined()

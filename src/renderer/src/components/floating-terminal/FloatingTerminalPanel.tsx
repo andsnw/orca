@@ -1487,8 +1487,15 @@ export function FloatingTerminalPanel({
   useEffect(() => {
     if (!open) {
       reportFloatingFocus(null, true)
+      // Drop a stale emptying-close reclaim intent on panel close: if a concurrent tab-create kept
+      // the panel from reaching 0, the count→0 consume never fired and the sticky intent must not
+      // survive to a later empty-panel mount and steal focus (F3 leak, defense-in-depth).
+      clearFloatingPanelReclaimIntent()
     }
-    return () => reportFloatingFocus(null, true)
+    return () => {
+      reportFloatingFocus(null, true)
+      clearFloatingPanelReclaimIntent()
+    }
   }, [open])
 
   useEffect(() => {

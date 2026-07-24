@@ -2180,6 +2180,39 @@ describe('FloatingTerminalPanel close behavior', () => {
     expect(panelElement.focus).not.toHaveBeenCalled()
   })
 
+  // F3 arm-timing: arming is gated on closeTerminalTab's onClosed (the *actual* close), not on
+  // close-initiation. A pinned/deferred close whose confirm is pending or cancelled never fires
+  // onClosed, so an emptying, panel-owned close must still leave the intent unarmed — otherwise a
+  // later empty-panel mount would reclaim focus for a close that never happened.
+  it('does not arm a reclaim when an emptying close is deferred and onClosed never fires', async () => {
+    setFloatingTabs([makeTab({ id: 'tab-1' })])
+    const panelElement = { contains: vi.fn().mockReturnValue(true), focus: vi.fn() }
+    const activeElement = { closest: vi.fn().mockReturnValue(panelElement) }
+    Object.setPrototypeOf(activeElement, HTMLElement.prototype)
+    vi.stubGlobal('document', {
+      activeElement,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    })
+    // Model closeTerminalTab deferring to its pin-confirm dialog (or the user cancelling): the close
+    // does not complete this tick, so the onClosed arming callback is never invoked.
+    mocks.closeTerminalTab.mockImplementationOnce(() => {})
+    const element = await renderPanel(true)
+    attachRef(findByProp(element, 'data-floating-terminal-panel').props.ref, panelElement)
+    runEffects()
+
+    const tabBar = findByTypeName(element, 'TabBar')
+    ;(tabBar.props.onClose as (tabId: string) => void)('tab-1')
+
+    // The panel owned focus and this close would empty it, yet arming rides on the real close via
+    // onClosed — which never fired — so no intent is armed and nothing can reclaim later.
+    expect(mocks.closeTerminalTab).toHaveBeenCalledWith(
+      'tab-1',
+      expect.objectContaining({ onClosed: expect.any(Function) })
+    )
+    expect(consumeFloatingPanelReclaimIntent()).toBe(false)
+  })
+
   it('preserves terminal focus when dragging the titlebar from inside the floating panel', async () => {
     setFloatingTabs([makeTab({ id: 'tab-1' })])
     const element = await renderPanel(true)

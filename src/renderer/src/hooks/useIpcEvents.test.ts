@@ -16,6 +16,10 @@ import type { AgentStatusClearIpcPayload } from '../../../shared/agent-status-ty
 import type { TuiAgent } from '../../../shared/types'
 import { makePaneKey } from '../../../shared/stable-pane-id'
 import { YOLO_TUI_AGENT_ARGS } from '../../../shared/tui-agent-permissions'
+import {
+  FLOATING_WORKSPACE_GUEST_CLOSE_EVENT,
+  FLOATING_WORKSPACE_GUEST_SELECT_INDEX_EVENT
+} from '@/lib/floating-workspace-item-actions'
 
 const { closeTerminalTabMock } = vi.hoisted(() => ({
   closeTerminalTabMock: vi.fn()
@@ -1002,6 +1006,8 @@ describe('useIpcEvents browser tab create routing', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -1220,6 +1226,8 @@ describe('useIpcEvents updater integration', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -1590,6 +1598,8 @@ describe('useIpcEvents updater integration', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -2099,6 +2109,8 @@ describe('useIpcEvents updater integration', () => {
             return () => {}
           },
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -2934,6 +2946,9 @@ describe('useIpcEvents browser tab close routing', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.unstubAllGlobals()
+    // Undo a partial mock of this module leaked by an earlier describe so the real
+    // floatingWorkspaceBrowserTabExists (Change E validation) is used here.
+    vi.doUnmock('@/lib/floating-workspace-terminal-actions')
     closeTerminalTabMock.mockReset()
   })
 
@@ -2943,12 +2958,16 @@ describe('useIpcEvents browser tab close routing', () => {
     worktreeId?: string
   }) => void
   type CloseActiveTabListener = () => void
+  type CloseFloatingItemListener = (payload: { sourceId: string }) => void
+  type SelectFloatingIndexListener = (payload: { index: number }) => void
   type CloseTerminalListener = (data: { tabId: string; paneRuntimeId?: number | null }) => void
   type CloseSessionTabListener = (data: { tabId: string; worktreeId: string }) => void
   type TerminalTabCloseRequestListener = (data: { requestId: string; tabId: string }) => void
 
   async function useIpcEventsForCloseRouting({
     closeActiveTabListenerRef,
+    closeFloatingItemListenerRef,
+    selectFloatingIndexListenerRef,
     closeSessionTabListenerRef,
     closeTerminalListenerRef,
     getState,
@@ -2959,6 +2978,8 @@ describe('useIpcEvents browser tab close routing', () => {
     persistWorkspaceSession = vi.fn().mockResolvedValue(undefined)
   }: {
     closeActiveTabListenerRef?: { current: CloseActiveTabListener | null }
+    closeFloatingItemListenerRef?: { current: CloseFloatingItemListener | null }
+    selectFloatingIndexListenerRef?: { current: SelectFloatingIndexListener | null }
     closeSessionTabListenerRef?: { current: CloseSessionTabListener | null }
     closeTerminalListenerRef?: { current: CloseTerminalListener | null }
     getState: () => Record<string, unknown>
@@ -3129,6 +3150,18 @@ describe('useIpcEvents browser tab close routing', () => {
           onCloseActiveTab: (listener: CloseActiveTabListener) => {
             if (closeActiveTabListenerRef) {
               closeActiveTabListenerRef.current = listener
+            }
+            return () => {}
+          },
+          onCloseFloatingItem: (listener: CloseFloatingItemListener) => {
+            if (closeFloatingItemListenerRef) {
+              closeFloatingItemListenerRef.current = listener
+            }
+            return () => {}
+          },
+          onSelectFloatingIndex: (listener: SelectFloatingIndexListener) => {
+            if (selectFloatingIndexListenerRef) {
+              selectFloatingIndexListenerRef.current = listener
             }
             return () => {}
           },
@@ -3671,6 +3704,8 @@ describe('useIpcEvents browser tab close routing', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -3890,6 +3925,8 @@ describe('useIpcEvents browser tab close routing', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -4104,6 +4141,8 @@ describe('useIpcEvents browser tab close routing', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -4170,6 +4209,70 @@ describe('useIpcEvents browser tab close routing', () => {
       requestId: 'req-3',
       error: 'Browser tab missing-page not found'
     })
+  })
+
+  // Change E (F1): the floating-guest close receiver validates the source id still names a
+  // live floating browser tab, then re-dispatches a typed window event for the mounted panel.
+  function dispatchedEventTypes(): string[] {
+    const dispatchEvent = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
+    return dispatchEvent.map((call) => (call[0] as Event).type)
+  }
+
+  it('re-dispatches a floating-guest close for a live floating browser source', async () => {
+    const closeFloatingItemListenerRef: { current: CloseFloatingItemListener | null } = {
+      current: null
+    }
+
+    await useIpcEventsForCloseRouting({
+      closeFloatingItemListenerRef,
+      getState: () => ({
+        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'guest-1' }] }
+      })
+    })
+
+    closeFloatingItemListenerRef.current?.({ sourceId: 'guest-1' })
+
+    const closeEvents = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[0] as CustomEvent)
+      .filter((event) => event.type === FLOATING_WORKSPACE_GUEST_CLOSE_EVENT)
+    expect(closeEvents).toHaveLength(1)
+    expect(closeEvents[0].detail).toEqual({ sourceId: 'guest-1' })
+  })
+
+  it('ignores a floating-guest close for a stale/unknown source (no-op)', async () => {
+    const closeFloatingItemListenerRef: { current: CloseFloatingItemListener | null } = {
+      current: null
+    }
+
+    await useIpcEventsForCloseRouting({
+      closeFloatingItemListenerRef,
+      getState: () => ({
+        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'guest-1' }] }
+      })
+    })
+
+    closeFloatingItemListenerRef.current?.({ sourceId: 'already-closed' })
+
+    expect(dispatchedEventTypes()).not.toContain(FLOATING_WORKSPACE_GUEST_CLOSE_EVENT)
+  })
+
+  it('re-dispatches a floating-guest index select', async () => {
+    const selectFloatingIndexListenerRef: { current: SelectFloatingIndexListener | null } = {
+      current: null
+    }
+
+    await useIpcEventsForCloseRouting({
+      selectFloatingIndexListenerRef,
+      getState: () => ({})
+    })
+
+    selectFloatingIndexListenerRef.current?.({ index: 2 })
+
+    const selectEvents = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[0] as CustomEvent)
+      .filter((event) => event.type === FLOATING_WORKSPACE_GUEST_SELECT_INDEX_EVENT)
+    expect(selectEvents).toHaveLength(1)
+    expect(selectEvents[0].detail).toEqual({ index: 2 })
   })
 })
 
@@ -4336,6 +4439,8 @@ describe('useIpcEvents CLI-created worktree activation', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -4595,6 +4700,8 @@ describe('useIpcEvents CLI-created worktree activation', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},
@@ -4856,6 +4963,8 @@ describe('useIpcEvents agent status snapshot integration', () => {
           replyTabSetProfile: () => {},
           onNewTerminalTab: () => () => {},
           onCloseActiveTab: () => () => {},
+          onCloseFloatingItem: () => () => {},
+          onSelectFloatingIndex: () => () => {},
           onSwitchTab: () => () => {},
           onSwitchTabAcrossAllTypes: () => () => {},
           onSwitchRecentTab: () => () => {},

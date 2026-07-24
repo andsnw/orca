@@ -1711,7 +1711,8 @@ export class BrowserManager {
           resolveRendererWebContents(this.rendererWebContentsIdByTabId, tabId),
         shouldForwardDictationShortcut: () => this.shouldForwardDictationShortcut?.() ?? false,
         isMobileEmulatorEnabled: () => this.settingsResolver?.().mobileEmulatorEnabled !== false,
-        getKeybindings: () => this.settingsResolver?.().keybindings
+        getKeybindings: () => this.settingsResolver?.().keybindings,
+        resolveWorktreeId: (tabId) => this.worktreeIdByTabId.get(tabId) ?? null
       })
     )
   }

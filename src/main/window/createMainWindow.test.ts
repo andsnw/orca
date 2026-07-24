@@ -2445,9 +2445,12 @@ describe('createMainWindow', () => {
 
     const setFocusedListener = vi
       .mocked(ipcMain.on)
-      .mock.calls.find(([channel]) => channel === 'ui:setFloatingTerminalInputFocused')?.[1]
+      .mock.calls.find(([channel]) => channel === 'ui:setFloatingFocus')?.[1]
     expect(setFocusedListener).toBeTypeOf('function')
-    setFocusedListener?.({ sender: webContents } as never, true)
+    setFocusedListener?.(
+      { sender: webContents } as never,
+      { panelFocused: true, terminalFocused: true } as never
+    )
 
     const preventDefault = vi.fn()
     const isDarwin = process.platform === 'darwin'

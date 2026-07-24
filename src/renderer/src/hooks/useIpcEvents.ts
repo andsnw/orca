@@ -119,10 +119,15 @@ import {
   createFloatingWorkspaceBrowserTab,
   createFloatingWorkspaceMarkdownTab,
   createFloatingWorkspaceTerminalTab,
+  floatingWorkspaceBrowserTabExists,
   isEmptyFloatingWorkspacePanelVisible,
   isFloatingWorkspacePanelFocused,
   switchFloatingWorkspaceTab
 } from '@/lib/floating-workspace-terminal-actions'
+import {
+  dispatchFloatingWorkspaceGuestClose,
+  dispatchFloatingWorkspaceGuestSelectIndex
+} from '@/lib/floating-workspace-item-actions'
 import {
   observeAgentHookCompletionForNotification,
   resetAgentHookCompletionNotificationCoordinators,
@@ -2589,6 +2594,22 @@ export function useIpcEvents(): void {
           }
           closeActiveBrowserTab()
         }
+      })
+    )
+
+    unsubs.push(
+      window.api.ui.onCloseFloatingItem(({ sourceId }) => {
+        // Change E: validate the forwarded source still names a live floating browser tab, then hand
+        // off to the mounted panel's own close closure (pin guard + reclaim intent). Stale id = no-op.
+        if (!floatingWorkspaceBrowserTabExists(useAppStore.getState(), sourceId)) {
+          return
+        }
+        dispatchFloatingWorkspaceGuestClose({ sourceId })
+      })
+    )
+    unsubs.push(
+      window.api.ui.onSelectFloatingIndex(({ index }) => {
+        dispatchFloatingWorkspaceGuestSelectIndex({ index })
       })
     )
 

@@ -1,5 +1,14 @@
 /* eslint-disable max-lines -- Why: terminal pane component co-locates title state, layout serialization, and portal rendering to keep pane lifecycle consistent. */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
@@ -238,6 +247,13 @@ type TerminalPaneProps = {
   onCloseTab: () => void
 }
 
+export type TerminalPaneHandle = {
+  // Close the active split pane (or the whole tab when only one pane remains), via the
+  // same pin-guarded, running-process-probed path L3's Cmd+W handler uses. Lets the floating
+  // panel's double-tap-bound close reach split-pane semantics without a synthetic keydown (F2).
+  closeActivePane: () => void
+}
+
 type PaneTitleOverlayRect = {
   left: number
   top: number
@@ -292,18 +308,21 @@ function arePaneTitleOverlayRectsEqual(
   })
 }
 
-export default function TerminalPane({
-  tabId,
-  worktreeId,
-  cwd,
-  isActive,
-  isVisible = true,
-  isWorktreeActive = isVisible,
-  isolatedPaneKey = null,
-  showSplitButton = true,
-  onPtyExit,
-  onCloseTab
-}: TerminalPaneProps): React.JSX.Element {
+function TerminalPane(
+  {
+    tabId,
+    worktreeId,
+    cwd,
+    isActive,
+    isVisible = true,
+    isWorktreeActive = isVisible,
+    isolatedPaneKey = null,
+    showSplitButton = true,
+    onPtyExit,
+    onCloseTab
+  }: TerminalPaneProps,
+  ref: React.ForwardedRef<TerminalPaneHandle>
+): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const managerRef = useRef<PaneManager | null>(null)
   const paneFontSizesRef = useRef<Map<number, number>>(new Map())
@@ -1331,6 +1350,20 @@ export default function TerminalPane({
         .catch(() => executeClosePane(paneId))
     },
     [executeClosePane, tabId, worktreeId, getCloseDialogCopyKind]
+  )
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      closeActivePane: (): void => {
+        const manager = managerRef.current
+        const pane = manager?.getActivePane() ?? manager?.getPanes()[0]
+        if (pane) {
+          handleRequestClosePane(pane.id)
+        }
+      }
+    }),
+    [handleRequestClosePane]
   )
 
   const handleSearchSelectedText = useCallback((selectedText: string): void => {
@@ -3201,3 +3234,5 @@ export default function TerminalPane({
     </>
   )
 }
+
+export default forwardRef(TerminalPane)

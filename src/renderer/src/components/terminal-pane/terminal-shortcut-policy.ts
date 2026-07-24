@@ -1,4 +1,8 @@
-import { keybindingMatchesAction, type KeybindingOverrides } from '../../../../shared/keybindings'
+import {
+  keybindingMatchesAction,
+  type KeybindingOverrides,
+  type TerminalShortcutPolicy
+} from '../../../../shared/keybindings'
 import type { WindowsShiftEnterEncoding } from './terminal-windows-shift-enter'
 
 export type TerminalShortcutEvent = {
@@ -82,7 +86,9 @@ export function resolveTerminalShortcutAction(
   // Why: lazy so agent-state lookup for the pane's Windows encoding runs only on Shift+Enter, not every keystroke.
   getWindowsShiftEnterEncoding?: () => WindowsShiftEnterEncoding,
   // Why: keybindings follow the client OS, but byte protocols follow the PTY host — they differ for macOS clients on Windows runtimes.
-  isWindowsTerminalHost: () => boolean = () => isWindows
+  isWindowsTerminalHost: () => boolean = () => isWindows,
+  // Why: gates the tab.close pane-close alias — under terminal-first a remapped tab.close yields to the shell (terminal.closePane, scope terminal, still closes).
+  terminalShortcutPolicy: TerminalShortcutPolicy = 'orca-first'
 ): TerminalShortcutAction | null {
   const platform: NodeJS.Platform = isMac ? 'darwin' : isWindows ? 'win32' : 'linux'
 
@@ -128,7 +134,15 @@ export function resolveTerminalShortcutAction(
       return { type: 'clearPaneTitle' }
     }
 
-    if (keybindingMatchesAction('terminal.closePane', event, platform, keybindings)) {
+    // Why: recognize the active tab.close binding as a pane-close alias too (F2), so a user who remaps
+    // tab.close alone still closes the focused split pane (never the whole tab); L2 always defers to us.
+    if (
+      keybindingMatchesAction('terminal.closePane', event, platform, keybindings) ||
+      keybindingMatchesAction('tab.close', event, platform, keybindings, {
+        context: 'terminal',
+        terminalShortcutPolicy
+      })
+    ) {
       return { type: 'closeActivePane' }
     }
 

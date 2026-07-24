@@ -123,6 +123,17 @@ function getFloatingWorkspaceBrowserTab(
   )
 }
 
+// Change E: the guest IPC receiver validates a forwarded close's source id still belongs to a live
+// floating browser tab before acting, so a stale/reordered/closed id is an idempotent no-op.
+export function floatingWorkspaceBrowserTabExists(
+  store: Pick<AppState, 'browserTabsByWorktree'>,
+  browserTabId: string
+): boolean {
+  return (store.browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []).some(
+    (tab) => tab.id === browserTabId
+  )
+}
+
 function activateFloatingWorkspaceCyclableTab(
   store: FloatingWorkspaceTabSwitchStore,
   next: TypeCyclableTab
@@ -178,10 +189,16 @@ export function isEmptyFloatingWorkspacePanelVisible(
 }
 
 export function isFloatingWorkspacePanelFocused(
-  doc: Pick<Document, 'activeElement'> = document
+  doc: Pick<Document, 'activeElement'> | null = typeof document === 'undefined' ? null : document
 ): boolean {
-  const active = doc.activeElement
+  const active = doc?.activeElement
   return active instanceof HTMLElement && active.closest(FLOATING_WORKSPACE_PANEL_SELECTOR) !== null
+}
+
+// Event-target-aware panel membership (vs isFloatingWorkspacePanelFocused which reads only activeElement).
+// Used for routing ownership when activeElement is transiently body/null during blur/IME churn (F6/F7).
+export function isEventTargetInsideFloatingWorkspacePanel(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest(FLOATING_WORKSPACE_PANEL_SELECTOR) !== null
 }
 
 export function isFloatingWorkspaceTerminalInputTarget(target: EventTarget | null): boolean {

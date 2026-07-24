@@ -56,7 +56,7 @@ import { useEffectiveMacOptionAsAlt } from '@/lib/keyboard-layout/use-effective-
 import { useTerminalFontZoom } from './useTerminalFontZoom'
 import CloseTerminalDialog, { type CloseTerminalDialogCopyKind } from './CloseTerminalDialog'
 import { MobileDriverOverlay } from './MobileDriverOverlay'
-import { TerminalErrorToast } from './TerminalErrorToast'
+import { stripSshReconnectOwnedErrorLines, TerminalErrorToast } from './TerminalErrorToast'
 import { TerminalSessionStateSaveFailureDialog } from './TerminalSessionStateSaveFailureDialog'
 import TerminalContextMenu from './TerminalContextMenu'
 import TerminalPaneHeaderOverlay from './TerminalPaneHeaderOverlay'
@@ -2779,6 +2779,18 @@ export default function TerminalPane({
     sshReconnectStatus &&
     sshReconnectStatus !== 'connected'
   )
+  // Why: while the reconnect banner owns recovery, strip only the SSH-owned lines from the
+  // (possibly aggregated) error, so a later successful connect can't flash the raw ssh:connect
+  // failure and any unrelated error still surfaces after reconnect.
+  useEffect(() => {
+    if (!showSshReconnectOverlay || terminalError == null) {
+      return
+    }
+    const kept = stripSshReconnectOwnedErrorLines(terminalError)
+    if (kept !== terminalError) {
+      setTerminalError(kept)
+    }
+  }, [showSshReconnectOverlay, terminalError])
   const menuPaneHasCustomTitle =
     contextMenu.menuPaneId !== null && Boolean(paneTitles[contextMenu.menuPaneId])
   const chatLeafStillMounted = chatLeafId
@@ -2889,13 +2901,15 @@ export default function TerminalPane({
           })
         }}
       />
-      {terminalError && isActive && (
+      {/* Why: the reconnect banner already owns SSH recovery UX; the z-50 error
+          toast was painting over it (same bottom strip) with the raw ssh:connect failure. */}
+      {terminalError && isActive && !showSshReconnectOverlay ? (
         <TerminalErrorToast
           error={terminalError}
           onDismiss={() => setTerminalError(null)}
           onRestartDaemon={() => daemonActions.setPending('restart')}
         />
-      )}
+      ) : null}
       {/* Why: portal into the pane so the banner stacks above the xterm canvas (sibling mount painted under WebGL). */}
       {showSshReconnectOverlay && sshReconnectTargetId && sshReconnectStatus
         ? managedPanes.map((pane) =>

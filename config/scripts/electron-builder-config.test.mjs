@@ -107,6 +107,14 @@ describe('electron-builder config', () => {
     )
   })
 
+  // Why: the watchdog only arms in packaged builds, and its ELECTRON_RUN_AS_NODE
+  // fork resolves the entry from app.asar.unpacked — inside the asar it never runs.
+  it('unpacks the forked main-thread hang-watchdog entry', () => {
+    expect(electronBuilderConfig.asarUnpack).toEqual(
+      expect.arrayContaining(['out/main/main-thread-hang-watchdog-entry.js'])
+    )
+  })
+
   it('uses the multi-size icon source for Linux packages', () => {
     expect(electronBuilderConfig.linux.icon).toBe('resources/build/icon.icns')
   })

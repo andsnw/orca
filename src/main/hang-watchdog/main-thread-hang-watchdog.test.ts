@@ -50,6 +50,12 @@ describe('deriveMacAppBundlePath', () => {
   it('returns empty for non-bundle executables', () => {
     expect(deriveMacAppBundlePath('/usr/local/bin/electron')).toBe('')
   })
+
+  it('picks the innermost bundle when an ancestor directory is named *.app', () => {
+    expect(
+      deriveMacAppBundlePath('/Users/j/my.app/Applications/Orca.app/Contents/MacOS/Orca')
+    ).toBe('/Users/j/my.app/Applications/Orca.app')
+  })
 })
 
 describe('installMainThreadHangWatchdog', () => {

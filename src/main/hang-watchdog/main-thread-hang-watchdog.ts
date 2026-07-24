@@ -7,7 +7,8 @@ const HEARTBEAT_INTERVAL_MS = 2_000
 
 export function deriveMacAppBundlePath(execPath: string): string {
   const marker = '.app/'
-  const index = execPath.indexOf(marker)
+  // Why: the executable sits under <bundle>/Contents/MacOS, so the last .app is the bundle — an ancestor directory named *.app must not win.
+  const index = execPath.lastIndexOf(marker)
   return index === -1 ? '' : execPath.slice(0, index + marker.length - 1)
 }
 

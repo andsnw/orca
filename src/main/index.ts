@@ -1783,17 +1783,6 @@ app.whenReady().then(async () => {
       unresponsiveMs: hangRecovery.unresponsiveMs,
       previousPid: hangRecovery.parentPid
     })
-    try {
-      new Notification({
-        title: 'Orca',
-        body: translateMain(
-          'hangWatchdog.recoveredNotice.body',
-          'Orca recovered from a system freeze and restarted'
-        )
-      }).show()
-    } catch {
-      // Notification is best-effort; the breadcrumb already records the recovery.
-    }
   }
   // Why: install certificate decisions before any webview or headless window issues its first TLS request.
   app.on(
@@ -2219,6 +2208,21 @@ app.whenReady().then(async () => {
   await ensureMainI18n()
   await setMainUiLanguage(store.getSettings().uiLanguage)
   logStartupMilestone('i18n-ready')
+
+  if (hangRecovery) {
+    // Why: translateMain falls back to English until i18n is ready, so the recovery notice must wait for it.
+    try {
+      new Notification({
+        title: 'Orca',
+        body: translateMain(
+          'hangWatchdog.recoveredNotice.body',
+          'Orca recovered from a system freeze and restarted'
+        )
+      }).show()
+    } catch {
+      // Notification is best-effort; the breadcrumb already records the recovery.
+    }
+  }
 
   registerAppMenu({
     appMenuLabel: devInstanceIdentity.name,

@@ -2947,7 +2947,7 @@ describe('useIpcEvents browser tab close routing', () => {
     vi.resetModules()
     vi.unstubAllGlobals()
     // Undo a partial mock of this module leaked by an earlier describe so the real
-    // floatingWorkspaceBrowserTabExists (Change E validation) is used here.
+    // floatingWorkspaceBrowserTabExists (source validation) is used here.
     vi.doUnmock('@/lib/floating-workspace-terminal-actions')
     closeTerminalTabMock.mockReset()
   })
@@ -4211,8 +4211,8 @@ describe('useIpcEvents browser tab close routing', () => {
     })
   })
 
-  // Change E (F1): the floating-guest close receiver validates the source id still names a
-  // live floating browser tab, then re-dispatches a typed window event for the mounted panel.
+  // The floating-guest close receiver validates the source id still names a live floating
+  // browser tab, then re-dispatches a typed window event for the mounted panel.
   function dispatchedEventTypes(): string[] {
     const dispatchEvent = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
     return dispatchEvent.map((call) => (call[0] as Event).type)

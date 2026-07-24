@@ -132,7 +132,7 @@ function getFloatingWorkspaceBrowserTab(
   )
 }
 
-// Change E: the guest IPC receiver validates a forwarded close's source id still belongs to a live
+// The guest IPC receiver validates a forwarded close's source id still belongs to a live
 // floating browser tab before acting, so a stale/reordered/closed id is an idempotent no-op.
 export function floatingWorkspaceBrowserTabExists(
   store: Pick<AppState, 'browserTabsByWorktree'>,

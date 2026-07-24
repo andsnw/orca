@@ -127,7 +127,7 @@ type FloatingPanelShortcutInput = Partial<
 > &
   Pick<KeyboardEvent, 'target'> & { doubleTapModifier?: PhysicalModifierToken }
 
-// Tri-state dispatch outcome (F5): 'deferred' means "matched, but leave DOM propagation intact so the
+// Tri-state dispatch outcome: 'deferred' means "matched, but leave DOM propagation intact so the
 // terminal pane's L3 handler closes the focused split pane" — callers must NOT consume it. Both
 // 'handled' and 'deferred' stop L2's own directional dispatch; only 'unmatched' falls through.
 type FloatingShortcutOutcome = 'handled' | 'deferred' | 'unmatched'
@@ -177,7 +177,7 @@ let lastReportedFloatingFocus: { panelFocused: boolean; terminalFocused: boolean
 // The IPC fn the dedupe above is keyed to; if the preload surface swaps (HMR/version skew), re-emit.
 let lastReportedFloatingFocusFn: unknown = null
 
-// Change A (F7): single guarded reporter for both focus bits. `release === true` means the panel is
+// Single guarded reporter for both focus bits. `release === true` means the panel is
 // explicitly losing keyboard ownership (outside pointer-down, close, unmount, window blur); otherwise both
 // bits derive from the next focus/blur target. Enforces panel ⊇ terminal and emits one atomic payload on change.
 function reportFloatingFocus(next: EventTarget | null, release = false): void {
@@ -1093,7 +1093,7 @@ export function FloatingTerminalPanel({
 
   // Double-tap-bound close: invoke the active terminal pane's own split-aware close authority directly
   // (the same executeClosePane L3 runs). L3's window listener can't resolve a synthetic double-tap, so
-  // deferring would strand it — this is the direct path (F2). Falls back to a whole-item confirmed close
+  // deferring would strand it — this is the direct path. Falls back to a whole-item confirmed close
   // when no terminal handle is mounted (e.g. active tab is not a terminal).
   const closeActiveFloatingTerminalPane = useCallback(() => {
     const handle = activeTerminalId ? terminalPaneHandlesRef.current.get(activeTerminalId) : null
@@ -1336,7 +1336,7 @@ export function FloatingTerminalPanel({
       }
 
       // Both 'handled' and 'deferred' stop L2's own directional dispatch; only 'deferred' leaves the
-      // event un-consumed so the terminal pane's L3 handler runs (F5).
+      // event un-consumed so the terminal pane's L3 handler runs.
       if (
         detected &&
         handleFloatingPanelShortcutAction(
@@ -1416,7 +1416,7 @@ export function FloatingTerminalPanel({
     }
   }, [handleFloatingPanelShortcutAction, open])
 
-  // Change E: a focused floating *browser* guest's close/index chords arrive over IPC (useIpcEvents)
+  // A focused floating *browser* guest's close/index chords arrive over IPC (useIpcEvents)
   // as these window events; handle them through the exact same closures the keyboard path uses so
   // pin guard, reclaim intent, and index selection stay single-sourced.
   useEffect(() => {
@@ -1472,7 +1472,7 @@ export function FloatingTerminalPanel({
         return
       }
       reportFloatingFocus(null, true)
-      // Cancel any pending emptying-close reclaim: an outside pointer-down is a genuine ownership release (F3).
+      // Cancel any pending emptying-close reclaim: an outside pointer-down is a genuine ownership release.
       clearFloatingPanelReclaimIntent()
       const active = document.activeElement
       if (active instanceof HTMLElement && panel.contains(active)) {
@@ -1491,7 +1491,7 @@ export function FloatingTerminalPanel({
       // Why: browser webviews focus out-of-process and do not emit renderer
       // pointerdown events, so release floating ownership on renderer blur too.
       reportFloatingFocus(null, true)
-      // Window blur to another app is a genuine ownership release; drop any pending emptying-close reclaim (F3).
+      // Window blur to another app is a genuine ownership release; drop any pending emptying-close reclaim.
       clearFloatingPanelReclaimIntent()
       if (isFloatingWorkspaceTerminalInputTarget(active)) {
         // Why: the terminal focus lifecycle preserves this exact helper across

@@ -771,9 +771,9 @@ describe('setupGuestShortcutForwarding', () => {
     expect(rendererSendMock).not.toHaveBeenCalledWith('ui:openQuickOpen')
   })
 
-  // Change E (F1): a floating-workspace-owned guest routes close/index chords to the
-  // floating-scoped IPC *carrying its source id*; a main-owned guest keeps main routing.
-  describe('source-aware close/index routing (Change E)', () => {
+  // A floating-workspace-owned guest routes close/index chords to the floating-scoped
+  // IPC *carrying its source id*; a main-owned guest keeps main routing.
+  describe('source-aware close/index routing', () => {
     const closeInput = { code: 'KeyW', key: 'w' }
     // workspace.selectByIndex default is Mod+1; tab.selectByIndex default is Ctrl+1 (darwin) / Alt+1 (other).
     const workspaceIndexInput = { code: 'Digit1', key: '1' }
@@ -846,7 +846,7 @@ describe('setupGuestShortcutForwarding', () => {
       expect(rendererSendMock).not.toHaveBeenCalledWith('ui:closeFloatingItem', expect.anything())
     })
 
-    it('drops auto-repeat index chords at the source for a floating guest (F4)', () => {
+    it('drops auto-repeat index chords at the source for a floating guest', () => {
       setupGuestShortcutForwarding({
         browserTabId,
         guest: makeGuest(),

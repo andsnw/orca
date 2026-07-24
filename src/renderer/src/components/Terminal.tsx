@@ -1781,7 +1781,7 @@ function Terminal(): React.JSX.Element | null {
         // The floating panel (L2) and its terminal pane handler (L3) own Cmd+W while the panel is
         // focused. Guard on the event target too — during blur/IME churn activeElement is transiently
         // body/null while a key still targets a floating xterm, and a main editor/browser being active
-        // would otherwise close the wrong (main) tab (F6). Yield without preventDefault so L3 runs.
+        // would otherwise close the wrong (main) tab. Yield without preventDefault so L3 runs.
         const floatingPanelOwnsEvent =
           isEventTargetInsideFloatingWorkspacePanel(e.target) || floatingWorkspaceFocused
         if (floatingPanelOwnsEvent) {

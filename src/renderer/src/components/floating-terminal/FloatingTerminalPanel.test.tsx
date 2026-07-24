@@ -889,7 +889,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     }
     Object.setPrototypeOf(newerFloatingInput, HTMLElement.prototype)
     mocks.focusTerminalTabSurface.mock.calls[0]?.[2].onImeRefocusSkipped(newerFloatingInput)
-    // Relatched onto the floating xterm: panel ⊇ terminal, both true (F7).
+    // Relatched onto the floating xterm: panel ⊇ terminal, both true.
     expect(mocks.setFloatingFocus).toHaveBeenLastCalledWith({
       panelFocused: true,
       terminalFocused: true

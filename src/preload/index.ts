@@ -3838,7 +3838,7 @@ const api = {
     setTerminalInputFocused: (focused: boolean): void => {
       ipcRenderer.send('ui:setTerminalInputFocused', focused)
     },
-    // Why: one atomic payload so main's synchronous before-input-event never sees a torn terminal=true/panel=false state (F7).
+    // Why: one atomic payload so main's synchronous before-input-event never sees a torn terminal=true/panel=false state.
     setFloatingFocus: (state: { panelFocused: boolean; terminalFocused: boolean }): void => {
       ipcRenderer.send('ui:setFloatingFocus', state)
     },

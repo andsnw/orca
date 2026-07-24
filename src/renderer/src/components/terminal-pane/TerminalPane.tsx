@@ -250,7 +250,7 @@ type TerminalPaneProps = {
 export type TerminalPaneHandle = {
   // Close the active split pane (or the whole tab when only one pane remains), via the
   // same pin-guarded, running-process-probed path L3's Cmd+W handler uses. Lets the floating
-  // panel's double-tap-bound close reach split-pane semantics without a synthetic keydown (F2).
+  // panel's double-tap-bound close reach split-pane semantics without a synthetic keydown.
   closeActivePane: () => void
 }
 

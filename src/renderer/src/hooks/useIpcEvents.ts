@@ -2599,7 +2599,7 @@ export function useIpcEvents(): void {
 
     unsubs.push(
       window.api.ui.onCloseFloatingItem(({ sourceId }) => {
-        // Change E: validate the forwarded source still names a live floating browser tab, then hand
+        // Validate the forwarded source still names a live floating browser tab, then hand
         // off to the mounted panel's own close closure (pin guard + reclaim intent). Stale id = no-op.
         if (!floatingWorkspaceBrowserTabExists(useAppStore.getState(), sourceId)) {
           return

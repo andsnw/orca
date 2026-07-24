@@ -506,7 +506,7 @@ export function createMainWindow(
   }
   ipcMain.on(terminalInputFocusChannel, onTerminalInputFocused)
   const floatingFocusChannel = 'ui:setFloatingFocus'
-  // Why: one atomic payload for both bits so before-input-event never reads a torn terminal=true/panel=false state (F7).
+  // Why: one atomic payload for both bits so before-input-event never reads a torn terminal=true/panel=false state.
   // terminalFocused drives the Ctrl+B/L terminal-context carve-out; panelFocused is the routing-ownership superset (panel ⊇ terminal).
   const onFloatingFocus = (event: Electron.IpcMainEvent, state: unknown): void => {
     if (event.sender !== mainWindow.webContents) {
@@ -718,14 +718,14 @@ export function createMainWindow(
       return false
     }
 
-    // Change B: while the floating panel owns the keyboard, yield indexed switch chords to the renderer
+    // While the floating panel owns the keyboard, yield indexed switch chords to the renderer
     // so L2 selects a floating tab instead of switching the main workspace behind the panel.
     if (
       floatingPanelFocused &&
       (action.type === 'jumpToWorktreeIndex' || action.type === 'jumpToTabIndex')
     ) {
       if (isAutoRepeat) {
-        // Contain held-key repeats in main — both renderer index paths skip e.repeat, so yielding a repeat would leak a raw key to xterm/DOM (F4).
+        // Contain held-key repeats in main — both renderer index paths skip e.repeat, so yielding a repeat would leak a raw key to xterm/DOM.
         event.preventDefault()
         return true
       }

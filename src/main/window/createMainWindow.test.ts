@@ -892,9 +892,9 @@ describe('createMainWindow', () => {
     expect(webContents.send).toHaveBeenCalledWith('ui:jumpToTabIndex', 4)
   })
 
-  // Change B (F4): while the floating panel owns the keyboard, L1 yields the initial indexed-switch
-  // keydown to the renderer (no preventDefault, no dispatch) so L2 selects a floating tab, and it
-  // contains held-key repeats in main (preventDefault, no dispatch) since the renderer skips e.repeat.
+  // While the floating panel owns the keyboard, L1 yields the initial indexed-switch keydown to the
+  // renderer (no preventDefault, no dispatch) so L2 selects a floating tab, and it contains held-key
+  // repeats in main (preventDefault, no dispatch) since the renderer skips e.repeat.
   it('yields indexed-switch chords to the floating panel and contains their repeats', () => {
     const windowHandlers: Record<string, (...args: any[]) => void> = {}
     const webContents = {

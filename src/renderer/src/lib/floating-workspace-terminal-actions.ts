@@ -18,7 +18,8 @@ export {
 } from './floating-workspace-tab-creation'
 export {
   isFloatingWorkspacePanelShortcut,
-  isFloatingWorkspacePanelShortcutTarget
+  isFloatingWorkspacePanelShortcutTarget,
+  matchFloatingWorkspacePanelShortcut
 } from './floating-workspace-shortcut-policy'
 
 type FloatingWorkspaceTabSwitchMode = 'same-type' | 'all-types' | 'terminal'
@@ -83,6 +84,14 @@ function getFloatingWorkspaceVisibleTabs(
     ),
     new Set((store.browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []).map((tab) => tab.id))
   )
+}
+
+// Live count of visible floating tabs from store state — lets close handlers re-derive "did this
+// actually empty the panel?" at the moment the close resolves, instead of trusting a frozen
+// pre-close render snapshot that a concurrent create/no-op close can invalidate.
+export function countVisibleFloatingWorkspaceItems(store: FloatingWorkspaceTabSwitchStore): number {
+  const group = getActiveFloatingWorkspaceGroup(store)
+  return group ? getFloatingWorkspaceVisibleTabs(store, group).length : 0
 }
 
 function getFloatingWorkspaceActiveEntry(

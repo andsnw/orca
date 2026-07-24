@@ -1,5 +1,7 @@
 import {
   keybindingMatchesAction,
+  type KeybindingInput,
+  type KeybindingMatchOptions,
   type KeybindingOverrides,
   type TerminalShortcutPolicy
 } from '../../../../shared/keybindings'
@@ -16,6 +18,23 @@ export type TerminalShortcutEvent = {
 }
 
 export type MacOptionAsAlt = 'true' | 'false' | 'left' | 'right'
+
+// Shared close-chord predicate: the terminal pane (L3) and the floating panel's focused-terminal
+// branch (L2) both treat terminal.closePane OR a terminal-scope tab.close as "close the active
+// pane," so the two layers can't diverge. Callers pass the options each binding needs —
+// terminal.closePane is context-free; tab.close is scoped to the terminal surface.
+export function isTerminalPaneCloseChord(
+  event: KeybindingInput,
+  platform: NodeJS.Platform,
+  keybindings: KeybindingOverrides | undefined,
+  closePaneOptions?: KeybindingMatchOptions,
+  tabCloseOptions?: KeybindingMatchOptions
+): boolean {
+  return (
+    keybindingMatchesAction('terminal.closePane', event, platform, keybindings, closePaneOptions) ||
+    keybindingMatchesAction('tab.close', event, platform, keybindings, tabCloseOptions)
+  )
+}
 
 // Why: macOS composition rewrites event.key for punctuation, so map event.code to the unmodified char for Esc+ sequences.
 const PUNCTUATION_CODE_MAP: Record<string, string> = {
@@ -134,11 +153,10 @@ export function resolveTerminalShortcutAction(
       return { type: 'clearPaneTitle' }
     }
 
-    // Why: recognize the active tab.close binding as a pane-close alias too (F2), so a user who remaps
+    // Why: recognize the active tab.close binding as a pane-close alias too, so a user who remaps
     // tab.close alone still closes the focused split pane (never the whole tab); L2 always defers to us.
     if (
-      keybindingMatchesAction('terminal.closePane', event, platform, keybindings) ||
-      keybindingMatchesAction('tab.close', event, platform, keybindings, {
+      isTerminalPaneCloseChord(event, platform, keybindings, undefined, {
         context: 'terminal',
         terminalShortcutPolicy
       })

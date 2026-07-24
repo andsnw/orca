@@ -127,7 +127,7 @@ import {
 import {
   dispatchFloatingWorkspaceGuestClose,
   dispatchFloatingWorkspaceGuestSelectIndex
-} from '@/lib/floating-workspace-item-actions'
+} from '@/lib/floating-workspace-guest-bridge'
 import {
   observeAgentHookCompletionForNotification,
   resetAgentHookCompletionNotificationCoordinators,

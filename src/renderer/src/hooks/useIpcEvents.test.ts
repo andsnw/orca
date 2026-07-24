@@ -19,7 +19,7 @@ import { YOLO_TUI_AGENT_ARGS } from '../../../shared/tui-agent-permissions'
 import {
   FLOATING_WORKSPACE_GUEST_CLOSE_EVENT,
   FLOATING_WORKSPACE_GUEST_SELECT_INDEX_EVENT
-} from '@/lib/floating-workspace-item-actions'
+} from '@/lib/floating-workspace-guest-bridge'
 
 const { closeTerminalTabMock } = vi.hoisted(() => ({
   closeTerminalTabMock: vi.fn()

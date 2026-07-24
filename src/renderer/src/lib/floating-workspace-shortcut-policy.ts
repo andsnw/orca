@@ -1,5 +1,6 @@
 import {
   keybindingMatchesAction,
+  matchKeybindingDigitIndex,
   type KeybindingActionId,
   type KeybindingMatchOptions,
   type KeybindingOverrides,
@@ -55,4 +56,54 @@ export function isFloatingWorkspacePanelShortcut(
   return FLOATING_WORKSPACE_PANEL_SHORTCUT_ACTIONS.some((actionId) =>
     keybindingMatchesAction(actionId, event, platform, keybindings, options)
   )
+}
+
+export type FloatingWorkspacePanelShortcutMatch =
+  | { readonly kind: 'action'; readonly action: KeybindingActionId }
+  | { readonly kind: 'index'; readonly index: number }
+
+// Single source of truth for the panel's non-creation shortcut claims (title rename, indexed switch,
+// window max/min) so the dispatch, its keydown preflight, and App.tsx's yield gate can't drift and
+// silently reintroduce the routing bug. Index precedence is workspace-then-tab, mirroring the
+// main-window resolver. Chrome actions take their own options (under terminal-first a focused xterm
+// resolves them in app context); the index match uses `options`.
+export function matchFloatingWorkspacePanelShortcut(
+  event: FloatingWorkspaceShortcutEvent,
+  platform: NodeJS.Platform,
+  keybindings: KeybindingOverrides | undefined,
+  options: KeybindingMatchOptions,
+  chromeOptions: KeybindingMatchOptions = options
+): FloatingWorkspacePanelShortcutMatch | null {
+  if (keybindingMatchesAction('tab.rename', event, platform, keybindings, chromeOptions)) {
+    return { kind: 'action', action: 'tab.rename' }
+  }
+  const index =
+    matchKeybindingDigitIndex('workspace.selectByIndex', event, platform, keybindings, options) ??
+    matchKeybindingDigitIndex('tab.selectByIndex', event, platform, keybindings, options)
+  if (index !== null) {
+    return { kind: 'index', index }
+  }
+  if (
+    keybindingMatchesAction(
+      'floatingWorkspace.maximize',
+      event,
+      platform,
+      keybindings,
+      chromeOptions
+    )
+  ) {
+    return { kind: 'action', action: 'floatingWorkspace.maximize' }
+  }
+  if (
+    keybindingMatchesAction(
+      'floatingWorkspace.minimize',
+      event,
+      platform,
+      keybindings,
+      chromeOptions
+    )
+  ) {
+    return { kind: 'action', action: 'floatingWorkspace.minimize' }
+  }
+  return null
 }

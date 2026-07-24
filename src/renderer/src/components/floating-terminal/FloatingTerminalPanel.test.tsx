@@ -21,7 +21,7 @@ import {
 import {
   clearFloatingPanelReclaimIntent,
   consumeFloatingPanelReclaimIntent
-} from '@/lib/floating-workspace-item-actions'
+} from '@/lib/floating-workspace-focus-reclaim'
 
 type EffectCallback = () => void | (() => void)
 
@@ -101,9 +101,11 @@ const mocks = vi.hoisted(() => ({
   closeWebRuntimeSessionTab: vi.fn(),
   closeFile: vi.fn(),
   closeTab: vi.fn(),
-  // Models terminal-tab-actions.closeTerminalTab: a real close runs the onClosed callback (which
-  // arms the emptying-close reclaim intent). Pinned/cancel paths are asserted via the mock's args.
-  closeTerminalTab: vi.fn((_tabId: string, options?: { onClosed?: () => void }) => {
+  // Models terminal-tab-actions.closeTerminalTab: a real close removes the tab from the store, then
+  // runs onClosed (which arms the emptying-close reclaim intent off the now-decremented live count).
+  // Pinned/cancel paths are asserted via the mock's args or overridden with mockImplementationOnce.
+  closeTerminalTab: vi.fn((tabId: string, options?: { onClosed?: () => void }) => {
+    removeFloatingTerminalTabFromStore(tabId)
     options?.onClosed?.()
   }),
   closeUnifiedTab: vi.fn(),
@@ -392,6 +394,17 @@ function makeFile(overrides: Partial<OpenFile> = {}): OpenFile {
     isDirty: overrides.isDirty ?? false,
     mode: overrides.mode ?? 'edit',
     ...overrides
+  }
+}
+
+// Models terminal-tab-actions.closeTerminalTab's store mutation: the real close removes the tab from
+// the floating store *before* it fires onClosed, so the reclaim intent arms on a decremented count.
+function removeFloatingTerminalTabFromStore(entityId: string): void {
+  const state = storeBox.state as FloatingPanelStoreState
+  const current = state.tabsByWorktree?.[FLOATING_TERMINAL_WORKTREE_ID] ?? []
+  const remaining = current.filter((tab) => tab.id !== entityId)
+  if (remaining.length !== current.length) {
+    setFloatingTabs(remaining)
   }
 }
 
@@ -760,7 +773,7 @@ function makeFocusedPanelKeyEvent({
 }
 
 describe('FloatingTerminalPanel close behavior', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     hookRuntime.effects = []
     hookRuntime.layoutEffects = []
@@ -774,6 +787,10 @@ describe('FloatingTerminalPanel close behavior', () => {
     // Why: the reclaim intent is also a module singleton; clear it so one test's
     // armed-but-unconsumed intent cannot trigger a reclaim in the next.
     clearFloatingPanelReclaimIntent()
+    // Why: the focus-report dedupe cache is module state keyed on the setFloatingFocus
+    // mock identity; reset it so a prior test's last-reported value can't suppress an IPC.
+    const { clearReportedFloatingFocusCache } = await import('./FloatingTerminalPanel')
+    clearReportedFloatingFocusCache()
     mocks.createTab.mockReturnValue(makeTab({ id: 'created-tab' }))
     mocks.createWebRuntimeSessionBrowserTab.mockResolvedValue(false)
     mocks.createWebRuntimeSessionTerminal.mockResolvedValue(false)

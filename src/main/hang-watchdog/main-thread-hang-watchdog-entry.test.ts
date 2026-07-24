@@ -61,6 +61,27 @@ describe('recoverFrozenParent', () => {
     expect(exitSpy).toHaveBeenCalledWith(0)
   })
 
+  it('scrubs ELECTRON_RUN_AS_NODE and watchdog config from the relauncher env', () => {
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    process.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS = '6000'
+    try {
+      recoverFrozenParent({
+        parentPid: 4242,
+        appBundlePath: '/Applications/Orca.app',
+        markerPath: join(dir, 'marker.json'),
+        unresponsiveMs: 45_000
+      })
+    } finally {
+      delete process.env.ELECTRON_RUN_AS_NODE
+      delete process.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS
+    }
+    const options = spawnMock.mock.calls[0]?.[2] as { env: Record<string, string | undefined> }
+    // Why: `open` propagates this env to the relaunched app; ELECTRON_RUN_AS_NODE would boot it as bare Node and it would exit immediately.
+    expect(options.env.ELECTRON_RUN_AS_NODE).toBeUndefined()
+    expect(options.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS).toBeUndefined()
+    expect(options.env.PATH).toBeDefined()
+  })
+
   it('still kills the parent when there is no bundle path or the marker write fails', () => {
     recoverFrozenParent({
       parentPid: 4242,

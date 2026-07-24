@@ -29,6 +29,14 @@ export function recoverFrozenParent(options: {
     // Why: recovery must proceed even if the marker cannot be written.
   }
   if (options.appBundlePath) {
+    // Why: `open` propagates this process's env to the relaunched app; ELECTRON_RUN_AS_NODE would boot it as bare Node and it would exit immediately (live-repro'd), and leaked watchdog config would misconfigure the relaunched app's own watchdog.
+    const relauncherEnv = { ...process.env }
+    delete relauncherEnv.ELECTRON_RUN_AS_NODE
+    for (const key of Object.keys(relauncherEnv)) {
+      if (key.startsWith('ORCA_HANG_WATCHDOG_')) {
+        delete relauncherEnv[key]
+      }
+    }
     // Why: the relauncher must outlive both this watchdog and the killed app, and must wait for the pid to die so the single-instance lock is free before open.
     spawn(
       '/bin/sh',
@@ -36,7 +44,7 @@ export function recoverFrozenParent(options: {
         '-c',
         `while kill -0 ${options.parentPid} 2>/dev/null; do sleep 0.2; done; sleep 1; open ${shellQuote(options.appBundlePath)}`
       ],
-      { detached: true, stdio: 'ignore' }
+      { detached: true, stdio: 'ignore', env: relauncherEnv }
     ).unref()
   }
   try {

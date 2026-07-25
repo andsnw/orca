@@ -310,6 +310,7 @@ const TerminalPaneOverlayLayer = memo(function TerminalPaneOverlayLayer({
   isWorktreeActive,
   isWorktreePresented = isWorktreeActive,
   coldParkTerminalPanes = false,
+  isForceParked = false,
   shouldMeasureHiddenWorktree = false,
   activityTerminalPortals = EMPTY_ACTIVITY_PORTALS,
   backgroundMountTabIds = null,
@@ -321,6 +322,8 @@ const TerminalPaneOverlayLayer = memo(function TerminalPaneOverlayLayer({
   isWorktreeActive: boolean
   isWorktreePresented?: boolean
   coldParkTerminalPanes?: boolean
+  /** Retention-budget force-park (C1 slice B): eviction-exempt tabs keep their mounted panes. */
+  isForceParked?: boolean
   shouldMeasureHiddenWorktree?: boolean
   activityTerminalPortals?: ActivityTerminalPortalTarget[]
   /** Non-null for targeted background mounts: only these terminal tabs get a
@@ -378,6 +381,7 @@ const TerminalPaneOverlayLayer = memo(function TerminalPaneOverlayLayer({
     assignments,
     isWorktreeActive,
     coldParkTerminalPanes,
+    isForceParked,
     shouldMeasureHiddenWorktree,
     activityTerminalPortals,
     activationDeferredMountTabIds

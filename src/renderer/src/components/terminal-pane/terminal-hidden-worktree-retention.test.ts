@@ -92,19 +92,31 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
     )
   })
 
-  it('never force-parks visible, measuring, portaled, covered, exempt, pending, or fresh candidates', () => {
+  it('never force-parks visible, measuring, portaled, covered, pending, or fresh candidates', () => {
     const aged = nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
     const worktrees = [
       retentionCandidate('wt-visible', aged, { isVisible: true }),
       retentionCandidate('wt-measure', aged, { shouldMeasureHiddenWorktree: true }),
       retentionCandidate('wt-portal', aged, { hasActivityTerminalPortal: true }),
       retentionCandidate('wt-covered', aged, { ordinaryParkingCovers: true }),
-      retentionCandidate('wt-exempt', aged, { hasEvictionExemptTab: true }),
       retentionCandidate('wt-pending', aged, { hasPendingSpawnWork: true }),
       retentionCandidate('wt-fresh', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS + 1),
       retentionCandidate('wt-unhidden', null)
     ]
     expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees })).toEqual(new Set())
+  })
+
+  it('force-parks worktrees with eviction-exempt tabs (the tabs, not the worktree, are exempt)', () => {
+    // Why: one exempt tab must not pin co-located un-parkable tabs forever;
+    // the exempt tabs' panes survive via the per-tab exclusion instead.
+    const aged = nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+    const worktrees = [
+      retentionCandidate('wt-exempt', aged, { hasEvictionExemptTab: true }),
+      retentionCandidate('wt-recent', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS)
+    ]
+    expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees })).toEqual(
+      new Set(['wt-exempt'])
+    )
   })
 
   it('is idempotent and only grows as time advances (flip-loop dwell)', () => {
@@ -204,6 +216,21 @@ describe('selectScrollbackDemotedTerminalWorktrees', () => {
         retentionBudgetEnabled: false
       })
     ).toEqual(new Set(['wt-aged']))
+  })
+
+  it('demotes an exempt worktree as soon as it force-parks under the count budget, before the TTL', () => {
+    // Why: after a force-park the exempt tabs' panes are the only ones left
+    // mounted in that worktree, so they take the demoted scrollback tier.
+    const underTtl = nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS
+    const worktrees = [
+      exemptCandidate('wt-a', underTtl - 3),
+      exemptCandidate('wt-b', underTtl - 2),
+      exemptCandidate('wt-c', underTtl - 1),
+      exemptCandidate('wt-d', underTtl)
+    ]
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, retentionLimit: 2 })
+    ).toEqual(new Set(['wt-a', 'wt-b']))
   })
 
   it('honors the retentionTtlMs override and stays time-monotone', () => {

@@ -755,6 +755,12 @@ function Terminal(): React.JSX.Element | null {
   const [parkedTerminalWorktreeIds, setParkedTerminalWorktreeIds] = useState<ReadonlySet<string>>(
     () => new Set()
   )
+  // Why separate from parkedTerminalWorktreeIds: force-parked worktrees keep
+  // their eviction-exempt tabs' panes mounted (per-tab exclusion), which
+  // ordinary parks never need — render and watcher sync must tell them apart.
+  const [forceParkedTerminalWorktreeIds, setForceParkedTerminalWorktreeIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set())
   // Why a ref: eviction captures buffers exactly once per force-park episode, before the unmount render.
   const forceParkedCaptureDoneRef = useRef(new Set<string>())
   // Tab restriction for targeted background mounts (wake/resume); a worktree absent from this map mounts all its tabs.
@@ -965,6 +971,9 @@ function Terminal(): React.JSX.Element | null {
       haveSameWorktreeIds(current, nextParkedTerminalWorktreeIds)
         ? current
         : nextParkedTerminalWorktreeIds
+    )
+    setForceParkedTerminalWorktreeIds((current) =>
+      haveSameWorktreeIds(current, forceParkedWorktreeIds) ? current : forceParkedWorktreeIds
     )
     // C1 slice C: eviction-exempt worktrees stay mounted, so past the TTL their
     // hidden panes demote to the minimum scrollback tier instead of unmounting.
@@ -1205,7 +1214,16 @@ function Terminal(): React.JSX.Element | null {
               worktreeId: workspace.id,
               tabId: tab.id
             })
-            if (!activityTerminalPortal) {
+            // Why the exempt exclusion: force-park keeps eviction-exempt tabs'
+            // panes mounted (a remount would orphan their live pty) — same
+            // per-tab carve-out as Activity portals, so no watcher owns them.
+            if (
+              !activityTerminalPortal &&
+              !(
+                forceParkedTerminalWorktreeIds.has(workspace.id) &&
+                isEvictionExemptTerminalTab(tab, workspace.id)
+              )
+            ) {
               parkedTabIds.add(tab.id)
             }
           }
@@ -1243,6 +1261,7 @@ function Terminal(): React.JSX.Element | null {
     activeTabIdByWorktree,
     anyMountedWorktreeHasLayout,
     backgroundMountRevision,
+    forceParkedTerminalWorktreeIds,
     getEffectiveLayoutForWorktree,
     groupsByWorktree,
     parkedTerminalWorktreeIds,
@@ -2231,6 +2250,7 @@ function Terminal(): React.JSX.Element | null {
                   isPresented={isPresented}
                   shouldMeasureHiddenWorktree={shouldMeasureHiddenWorktree}
                   shouldColdParkTerminalPanes={shouldColdParkTerminalPanes}
+                  isForceParked={forceParkedTerminalWorktreeIds.has(workspace.id)}
                   activityTerminalPortals={activityTerminalPortals}
                   backgroundMountTabIds={
                     backgroundMountTabIdsByWorktreeRef.current.get(workspace.id) ?? null
@@ -2304,8 +2324,17 @@ function Terminal(): React.JSX.Element | null {
                         const isPresentedTerminalTab =
                           isPresented &&
                           (isActiveTerminalTab || tab.id === activeTabIdByWorktree[workspace.id])
-                        // Why: parking unmounts the view but keeps the PTY; an Activity portal stays mounted as a visible consumer.
-                        if (shouldColdParkTerminalPanes && !isActivityPortalTab) {
+                        // Why: parking unmounts the view but keeps the PTY; an Activity portal stays
+                        // mounted as a visible consumer, and a force-parked worktree's eviction-exempt
+                        // tabs stay mounted because a remount would orphan their live pty.
+                        if (
+                          shouldColdParkTerminalPanes &&
+                          !isActivityPortalTab &&
+                          !(
+                            forceParkedTerminalWorktreeIds.has(workspace.id) &&
+                            isEvictionExemptTerminalTab(tab, workspace.id)
+                          )
+                        ) {
                           return null
                         }
                         const terminalPane = (
@@ -2503,6 +2532,7 @@ const WorktreeSplitSurface = React.memo(function WorktreeSplitSurface({
   isPresented,
   shouldMeasureHiddenWorktree,
   shouldColdParkTerminalPanes,
+  isForceParked,
   activityTerminalPortals,
   backgroundMountTabIds,
   activationDeferredMountTabIds,
@@ -2516,6 +2546,7 @@ const WorktreeSplitSurface = React.memo(function WorktreeSplitSurface({
   isPresented: boolean
   shouldMeasureHiddenWorktree: boolean
   shouldColdParkTerminalPanes: boolean
+  isForceParked: boolean
   activityTerminalPortals: ActivityTerminalPortalTarget[]
   backgroundMountTabIds: ReadonlySet<string> | null
   activationDeferredMountTabIds: ReadonlySet<string> | null
@@ -2559,6 +2590,7 @@ const WorktreeSplitSurface = React.memo(function WorktreeSplitSurface({
         isWorktreeActive={isVisible}
         isWorktreePresented={isPresented}
         coldParkTerminalPanes={shouldColdParkTerminalPanes}
+        isForceParked={isForceParked}
         shouldMeasureHiddenWorktree={shouldMeasureHiddenWorktree}
         activityTerminalPortals={activityTerminalPortals}
         backgroundMountTabIds={backgroundMountTabIds}

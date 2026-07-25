@@ -22,6 +22,7 @@ import {
   recordParkVerdictFlips,
   type ParkVerdictFlipRecord
 } from './terminal-park-verdict-flip-telemetry'
+import { isEvictionExemptTerminalTab } from './terminal-hidden-worktree-retention'
 import { getTerminalParkingPolicyOverrides } from './terminal-parking-e2e-overrides'
 import {
   canWatcherCoverParkedTerminalTab,
@@ -53,6 +54,10 @@ export function useTerminalTabColdParking(args: {
   isWorktreeActive: boolean
   /** Worktree-level park verdict from Terminal.tsx. */
   coldParkTerminalPanes: boolean
+  /** Retention-budget force-park (C1 slice B): unlike ordinary parks, the
+   *  worktree may hold eviction-exempt tabs, whose panes must stay mounted —
+   *  a remount would orphan their live pty (same carve-out as portals). */
+  isForceParked?: boolean
   /** Hidden-measuring startup probe from Terminal.tsx — the panes must stay
    *  mounted for their first xterm fit, mirroring the worktree-level guard. */
   shouldMeasureHiddenWorktree: boolean
@@ -70,6 +75,7 @@ export function useTerminalTabColdParking(args: {
     assignments,
     isWorktreeActive,
     coldParkTerminalPanes,
+    isForceParked = false,
     shouldMeasureHiddenWorktree,
     activityTerminalPortals,
     activationDeferredMountTabIds
@@ -223,6 +229,11 @@ export function useTerminalTabColdParking(args: {
       if (
         (coldParkTerminalPanes || (!isVisible && coldParkedTerminalTabIds.has(terminalTab.id))) &&
         !hasActivityTerminalPortal &&
+        // Why: a force-parked worktree's eviction-exempt tabs keep their
+        // mounted panes — a remount would orphan their live pty. Scoped to
+        // force-parks: ordinary parks never contain exempt tabs (eligibility
+        // requires every tab restorable).
+        !(isForceParked && isEvictionExemptTerminalTab(terminalTab, worktreeId)) &&
         // Why: the hidden-measuring startup probe needs mounted panes; gate
         // here too so the reveal lands in the same render that starts it.
         !shouldMeasureHiddenWorktree
@@ -247,6 +258,7 @@ export function useTerminalTabColdParking(args: {
     coldParkTerminalPanes,
     coldParkedTerminalTabIds,
     activationDeferredMountTabIds,
+    isForceParked,
     isWorktreeActive,
     shouldMeasureHiddenWorktree,
     terminalTabs,

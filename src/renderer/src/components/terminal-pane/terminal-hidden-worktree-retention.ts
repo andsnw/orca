@@ -20,8 +20,9 @@ export const TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS = 45 * 60_000
 
 // Why: an eviction-exempt tab holds a live local pty a remount could not
 // reattach (daemon-fail-open separator-less ids, ptys minted under another
-// worktree) — a fresh spawn would orphan the live shell, so these worktrees
-// never force-park and rely on scrollback demotion instead.
+// worktree) — a fresh spawn would orphan the live shell. The TAB keeps its
+// mounted pane when its worktree force-parks (per-tab exclusion, mirroring
+// Activity portals) and relies on scrollback demotion instead.
 export function isEvictionExemptTerminalTab(
   tab: Pick<TerminalTab, 'ptyId'>,
   worktreeId: string
@@ -51,10 +52,13 @@ export type TerminalWorktreeRetentionCandidate = {
  * Retention budget over the worktrees ordinary parking can never evict: any
  * hidden un-parkable worktree beyond the retention limit or TTL force-parks —
  * panes unmount, watchers cover the tabs whose transport exists, and reveal
- * restores per pty class (the app-restart experience). Ranking reuses the
- * hot-retain machinery, so the last-active exemption and deterministic ties
- * hold here too, and the verdict changes only at deadlines or on real state
- * transitions (no new flip-loop inputs).
+ * restores per pty class (the app-restart experience). Eviction-exempt tabs
+ * do NOT veto the worktree: they keep their mounted panes via the per-tab
+ * exclusion (Activity-portal pattern) while sibling tabs unmount, so one
+ * exempt tab can no longer pin co-located remote-runtime tabs forever.
+ * Ranking reuses the hot-retain machinery, so the last-active exemption and
+ * deterministic ties hold here too, and the verdict changes only at deadlines
+ * or on real state transitions (no new flip-loop inputs).
  */
 export function selectRetentionForceParkedTerminalWorktrees(
   args: {
@@ -76,7 +80,6 @@ export function selectRetentionForceParkedTerminalWorktrees(
       worktree.shouldMeasureHiddenWorktree ||
       worktree.hasActivityTerminalPortal ||
       worktree.ordinaryParkingCovers ||
-      worktree.hasEvictionExemptTab ||
       worktree.hasPendingSpawnWork ||
       args.nowMs - worktree.hiddenSinceMs < coldParkDelayMs
     ) {
@@ -92,10 +95,14 @@ export function selectRetentionForceParkedTerminalWorktrees(
 }
 
 /**
- * Eviction-exempt worktrees (see isEvictionExemptTerminalTab) stay mounted, so
- * past the retention TTL their hidden panes demote to the minimum scrollback
- * tier instead. Time-monotone for fixed inputs: membership only ever grows
- * until a reveal resets hiddenSince — no oscillation surface.
+ * Scrollback demotion targets the hidden panes that stay mounted past the
+ * retention deadlines: eviction-exempt tabs' worktrees (their panes survive
+ * force-park via the per-tab exclusion) demote past the TTL — or immediately
+ * when their worktree force-parks under the count budget, since the exempt
+ * panes are then the only ones left mounted. Time-monotone for fixed inputs:
+ * the force-parked set and the past-TTL set only ever grow with nowMs, so
+ * membership only grows until a reveal resets hiddenSince — no oscillation
+ * surface.
  */
 export function selectScrollbackDemotedTerminalWorktrees(
   args: {
@@ -113,6 +120,7 @@ export function selectScrollbackDemotedTerminalWorktrees(
     return new Set()
   }
   const ttlMs = args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+  const forceParked = selectRetentionForceParkedTerminalWorktrees(args)
   const demoted = new Set<string>()
   for (const worktree of args.worktrees) {
     if (
@@ -121,12 +129,13 @@ export function selectScrollbackDemotedTerminalWorktrees(
       worktree.shouldMeasureHiddenWorktree ||
       worktree.hasActivityTerminalPortal ||
       !worktree.hasEvictionExemptTab ||
-      worktree.hasPendingSpawnWork ||
-      args.nowMs - worktree.hiddenSinceMs < ttlMs
+      worktree.hasPendingSpawnWork
     ) {
       continue
     }
-    demoted.add(worktree.worktreeId)
+    if (args.nowMs - worktree.hiddenSinceMs >= ttlMs || forceParked.has(worktree.worktreeId)) {
+      demoted.add(worktree.worktreeId)
+    }
   }
   return demoted
 }

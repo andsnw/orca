@@ -1,391 +1,288 @@
-# C1 fix design — memory-bounded terminal retention
+# C1 — memory-bounded terminal retention (as built)
 
-Status: APPROVED at decision gate (A+B+C, D deferred) with binding conditions:
-(1) parked-SSH reveal must verify per-pty-class that a main-side headless
-emulator actually backs `pty:getMainBufferSnapshot` (accept only
-`source === 'headless'`); degrade to relay replay otherwise — never a
-blank/stale paint. (2) Separable commits A→B→C, each independently
-revertable behind its own kill switch; A/B default ON. (3) Budget defaults
-12-hidden + 45-min TTL as named constants with sizing comments grounded in
-the measured 2.5–19 MB numbers. (4) Preserve the damping conventions in §1.2;
-add a flip-loop regression test for eviction. (5) Tests must cover SSH
-park+reveal round-trip fidelity, folder workspaces, remote-runtime eviction,
-fail-open exemption, and C demotion+restore. (6) Explicit non-claim recorded
-below.
+Status: IMPLEMENTED on branch `fix-c1-worktree-retention`, three slices behind
+independent kill switches (defaults on):
+
+- **A** — SSH worktrees park like local ones; reveal paints from main's
+  headless model with the relay replay as fallback (`terminalSshViewParking`).
+- **B** — hidden un-parkable worktrees force-park beyond a count budget (12)
+  or TTL (45 min) (`terminalHiddenWorktreeRetentionBudget`).
+- **C** — hidden panes that must stay mounted demote to the minimum
+  scrollback tier (`terminalHiddenScrollbackDemotion`).
+
+The decision-gate conditions (headless-source trust, separable revertable
+commits, named budget constants with sizing comments, damping conventions +
+flip-loop regression tests, the test-coverage list, and the explicit
+non-claim) are all reflected below. File:line cites are verified at this
+branch's HEAD; prefer the symbol names over the line numbers if they drift.
 
 **Non-claim and residual (gate condition 6):** this fix does NOT claim H1
 alone reaches 3.5 GB. It bounds the retained-pane fleet, which also bounds
 every per-pane accumulator. The named residual is the uncapped
 `pendingSideEffects` queue (`terminal-pane/pty-transport.ts:157`, H2 in the
-diagnosis) — it still grows without bound inside a *visible or warm* pane
-under background timer throttling and needs its own cap + drain fix as a
-follow-up. H3 (premature ack) is already fixed at HEAD (#10012) but absent
-from the 1.4.15x field builds.
-All cites at HEAD `9eff3728a3` in this worktree. Companion diagnosis:
+diagnosis) — see §4. H3 (premature ack) is already fixed at HEAD (#10012)
+but absent from the 1.4.15x field builds. Companion diagnosis:
 `crash-c1-heap-leak-diagnosis/C1_DIAGNOSIS.md` (other worktree, read-only).
 
 ---
 
-## 1. Confirmed mechanism at HEAD (Phase-1 re-verification)
+## 1. Problem and mechanism (diagnosis recap)
 
-The H1 mechanism holds at HEAD exactly as diagnosed at v1.4.155; the only
-change to the two core files since v1.4.155 was #10179 and its revert.
-
-- `Terminal.tsx:1018` — `mountedWorktreeIdsRef.current.add(...)` on every
-  activation, permanently; removal only when the worktree ceases to exist
-  (`:1031-1037`). Both render paths mount panes for every id in the set
-  (`:2071` split, `:2124` legacy).
-- The mounted set also grows **without user action**: background mounts from
-  agent launches (`launch-agent-background-session.ts:303`), sleeping-agent
-  wakes (`wake-sleeping-agents-in-background.ts:83`), mobile tab subscriptions
+- `Terminal.tsx:1144` adds every activated worktree to
+  `mountedWorktreeIdsRef` permanently; removal only when the worktree ceases
+  to exist. The set also grows without user action: agent launches
+  (`launch-agent-background-session.ts:303`), sleeping-agent wakes
+  (`wake-sleeping-agents-in-background.ts:83`), mobile tab subscriptions
   (`useIpcEvents.ts:1694`), CLI-driven tab creation (`useIpcEvents.ts:1767`),
-  and browser-automation bootstrap leases which mount the **whole worktree**
-  with no tab restriction (`useIpcEvents.ts:222`). This is what survives
-  `renderer_recovery_reload` and re-populates the set overnight.
-- Sole eviction lever is cold parking, and eligibility is all-or-nothing:
-  `canParkTerminalWorktreeRenderers` (`terminal-hidden-view-parking.ts:70-108`)
-  requires `isSnapshotBackedTerminalPty` (`:56-68`) for EVERY tab. HEAD adds a
-  further veto absent from the v155 diagnosis: a worktree with any
-  **watcher-uncoverable** tab never parks (`Terminal.tsx:875-880`).
-- Un-parkable classes at HEAD (each ⇒ unlimited retention of the whole
-  worktree): SSH ptys, remote-runtime ptys, null ptyIds
-  (`ssh-target-cleanup.ts:127` mints exactly that), separator-less
-  daemon-fail-open ids, ptys minted under another worktreeId
-  (`terminal-hidden-view-parking.ts:56-68`), tabs with pending
-  startup/activation spawns (`:99-106`), and any watcher-uncoverable tab
-  (`terminal-parked-tab-watchers.ts:92-109`).
-- Caps compose per-worktree: `TERMINAL_TAB_HOT_RETAIN_LIMIT = 12` is enforced
-  per overlay-layer instance, i.e. per worktree
-  (`use-terminal-tab-cold-parking.ts:136`), on top of the 8-worktree warm cap
-  — and neither cap sees un-parkable worktrees at all.
+  and browser-automation bootstrap leases which mount the whole worktree
+  (`useIpcEvents.ts:222`).
+- Pre-fix, the sole eviction lever was cold parking, and eligibility was
+  all-or-nothing: `canParkTerminalWorktreeRenderers`
+  (`terminal-hidden-view-parking.ts`) requires a restorable pty for EVERY
+  tab, plus a watcher-coverage veto (`canWatcherCoverParkedTerminalTab`,
+  `terminal-parked-tab-watchers.ts:104`). Un-parkable classes — SSH (pre-A),
+  remote-runtime, null ptyIds, separator-less daemon-fail-open ids, ptys
+  minted under another worktreeId (`isSnapshotBackedTerminalPty`,
+  `terminal-hidden-view-parking.ts:58`), pending spawns, watcher-uncoverable
+  tabs — each meant unlimited retention of the whole worktree.
+- SSH bytes DO transit local main: `runtime.onPtyData`
+  (`orca-runtime.ts:7484`) → `trackHeadlessTerminalData` →
+  `getOrCreateHeadlessTerminal` (`orca-runtime.ts:9105`) maintains a
+  ~5000-row headless model for every pty main ingests, served over
+  `pty:getMainBufferSnapshot` (`src/main/ipc/pty.ts:4058`). The pre-fix SSH
+  reattach path never consulted it — it painted the relay's rolling 100 KiB
+  raw-byte buffer (`src/relay/pty-handler.ts:175,476-478`).
+- Remote-runtime is the genuinely hard class: no bytes transit main, and the
+  desktop subscribe snapshot is screen-only
+  (`src/main/runtime/rpc/methods/terminal.ts:688`).
 
-Corrections to the established framing (things the fix should NOT build for):
+**Measured cost per retained hidden pane** (repo's own
+`@xterm/headless@6.1.0-beta.287`, agent-CLI-like SGR output, steady state):
 
-1. **The legacy non-split path is effectively dead.**
-   `anyMountedWorktreeHasLayout` synthesizes a layout from merely having one
-   group (`split-group-mount.ts:7-23,33-45`); groups are created on first
-   `addTab` (`tab-group-state.ts:57-80`) and hydration always writes both
-   (`tabs-hydration.ts:271-284`). The legacy branch is reachable only when
-   every mounted worktree has zero tabs and zero groups. Per-tab-parking
-   parity for it, or retiring it, is not a C1 lever (kept out of scope).
-2. **No parking flip-loop ever existed.** The first parking attempt
-   (`1ab6b87c7f`, reverted `8eee59c084`) was pulled for going *silent* (no
-   byte watchers), not for oscillating. The two real React #185 loops
-   (`9038a78d37` overlay measure↔fit; `e8452c8c50` Activity portal
-   reconciliation) are adjacent, and their post-mortems define the damping
-   conventions any new lever must keep: verdict excluded from its own effect
-   deps (`Terminal.tsx:911-921`), set-equality bail-outs returning the
-   previous reference (`Terminal.tsx:153-163`), strictly-positive recheck
-   delays (`terminal-hidden-view-parking.ts:269-284`), and monotone
-   consumption edges. The one genuinely bidirectional verdict input is
-   Activity-portal readiness; the watcher-coverage veto reads module state
-   written at unmount (`terminal-parked-watcher-registry.ts:25-35`) and sits
-   in no dep array.
-3. **SSH exclusion is about reveal fidelity, not observability.** Fact-mode
-   parked watchers subscribe main-computed side-effect facts and work for any
-   pty whose bytes transit local main — which includes SSH; only a non-null
-   `runtimeEnvironmentId` disqualifies
-   (`terminal-side-effect-facts-handler.ts:44-62`). And main already
-   maintains a headless emulator (~5000-row model) for every pty it ingests,
-   SSH included: `runtime.onPtyData` → `trackHeadlessTerminalData` →
-   `getOrCreateHeadlessTerminal` (`orca-runtime.ts:7484,7528,9026-9044,
-   9105-9113`), served over `pty:getMainBufferSnapshot`
-   (`src/main/ipc/pty.ts:4058-4116`). **The SSH reattach path simply never
-   consults it** — it paints the relay's rolling 100 KiB raw-byte buffer
-   (`src/relay/pty-handler.ts:175,472-480`) after an unconditional clear
-   (`pty-connection.ts:7378-7391`).
-4. **Remote-runtime is the genuinely hard class.** No bytes transit main (no
-   emulator, no facts); the desktop subscribe snapshot is screen-only —
-   `scrollbackRows: 0` (`src/main/runtime/rpc/methods/terminal.ts:682-696`)
-   — even though the runtime host holds scrollback and serves it to mobile
-   (`:697-714`).
-
-## 2. Quantification (what a retained hidden pane actually costs)
-
-Measured empirically with the repo's own `@xterm/headless@6.1.0-beta.287`
-(agent-CLI-like SGR output, 200 cols; steady state after scrollback wrap):
-
-| scrollback | V8 heap (counts toward the 3586 MB ceiling) | ArrayBuffers (off-heap, invisible to `usedJSHeapSize`) |
+| scrollback | V8 heap (counts toward the 3586 MB ceiling) | ArrayBuffers (off-heap) |
 |---|---|---|
 | 5 000 rows (default) | ~2.5 MB | ~12 MB |
-| 50 000 rows (max) | ~19 MB | ~115 MB |
-
-Cost plateaus once scrollback wraps (120k lines into a 50k buffer = same as
-60k). On top of the xterm graph, each mounted-but-hidden pane retains: all six
-addons, ResizeObservers, React fiber tree, the PTY IPC subscription, a
-background write queue capped at max(2 MiB, rows×120) chars — up to ~6 MB at
-50k rows (`terminal-scrollback-policy.ts:37-46`,
-`pane-terminal-output-scheduler.ts:102,124`) — and the **uncapped**
-`pendingSideEffects` array (`terminal-pane/pty-transport.ts:157`, H2), which
-is per-pane closure state and grows without bound under background timer
-throttling. Only worktree-level hiding releases WebGL; a tab hidden behind a
-sibling in the active worktree keeps its GL context
-(`terminal-visibility-resume.ts:103-137`). Nothing trims scrollback or
-addons on hide.
+| 50 000 rows (max) | ~19.4 MB | ~114.7 MB |
 
 **Honest magnitude statement.** Static H1 retention alone reaches GB scale
-only with ~10⁲ big-scrollback panes (e.g. 20 SSH worktrees × 5 agent tabs ≈
-0.4–1.9 GB depending on scrollback setting, plus per-pane floors). The
-observed multi-hour monotone climbs and the codeg-dev 1.7 GB-in-20-min boot
-burst are best explained as **H1 × per-pane accumulators**: H1 supplies an
-unbounded, streaming, never-evicted pane fleet; H2 (and, in the 1.4.15x field
-builds, H3 premature-ack) supply per-pane growth that never plateaus.
-Bounding the fleet bounds the class — every per-pane accumulator dies with
-its pane. If the gate wants a pure-H1 story, this design does not claim one;
-the instrumentation branch (`crash-c1-heap-leak-diagnosis` @ 57f39c369b:
-precise memory + paneTerminals census + terminalOutputQueue contributor)
-confirms attribution on the next field cycle and composes with this fix
-unchanged.
+only with on the order of 10² big-scrollback panes (e.g. 20 SSH worktrees ×
+5 agent tabs ≈ 0.4–1.9 GB). The observed multi-hour monotone climbs are best
+explained as H1 × per-pane accumulators: H1 supplies an unbounded,
+never-evicted pane fleet; H2 (and H3 in the 1.4.15x field builds) supply
+per-pane growth that never plateaus. Bounding the fleet bounds the class —
+every per-pane accumulator dies with its pane. Field fit: the zero-git OOM
+bundle is an SSH workspace with 7 worktree activations — the exact "nothing
+can ever park" profile.
 
-Field fit: the zero-git OOM bundle (`1biDRoy…`, 6.6 MB/min for 10 h) is an
-SSH workspace with 7 worktree activations — the exact "nothing can ever
-park" profile.
+## 2. Design as built
 
-## 3. Consumers/assumptions of "mounted forever" (eviction blast-radius map)
+### 2.1 Slice A — SSH worktrees park like local ones
 
-What unmounting a pane already handles correctly (verified disposal chain:
-`use-terminal-pane-lifecycle.ts:1587-1680`, `pane-lifecycle.ts:213-300`,
-`pty-connection.ts:8264-8377`): PTY survives (detach, never kill,
-`pty-transport.ts:906-916`); store tab entry, `tab.ptyId`, layouts, and
-`capturedPanesByTabId` persist; exit observers stay registered.
+- **Eligibility** (`isParkRestorableTerminalPty`,
+  `terminal-hidden-view-parking.ts`): an SSH-shaped pty id
+  (`parseAppSshPtyId`) counts as restorable when `terminalSshViewParking` is
+  on. The signal is stable by construction — it derives from the pty id
+  shape plus the setting, both of which only change on real state
+  transitions, so it adds no flip-loop input. Remote-runtime,
+  separator-less, foreign-worktree, and null exclusions are unchanged.
+- **Watcher coverage:** fact-mode parked watchers work for any pty whose
+  bytes transit local main, which includes SSH; only a non-null
+  `runtimeEnvironmentId` disqualifies.
+- **Reveal paint** (`pty-connection.ts`, reattach path): relay `pty.attach`
+  stays the liveness authority (the SSH reattach recovery chain is
+  untouched). The paint prefers main's headless model over the relay replay:
+  `fetchSshMainModelReattachSnapshot` fetches `pty:getMainBufferSnapshot`
+  and `decideSshReattachPaintSource` (`ssh-reattach-model-restore.ts`)
+  accepts only `source === 'headless'` snapshots — a 'renderer'-sourced
+  snapshot serializes a mounted xterm that no longer exists after a park.
+  Emptiness is judged on the COMPOSED payload (`scrollbackAnsi` + `data` +
+  `pendingEscapeTailAnsi`), so an alt-screen snapshot with an empty screen
+  frame still paints. Anything else degrades to the relay replay — never a
+  blank paint when either source has content.
+- **Empty-replay probe:** when the reattach carries no structural replay at
+  all (relay restart empties the buffer), the SSH path still probes the
+  model — the snapshot is prefetched before the coordinator route is chosen
+  and painted inside the coordinator, so a relay restart no longer blanks a
+  reveal main's model can restore.
+- **CONSTRAINT — the paint is inline, never via `applyMainBufferSnapshot`.**
+  That function runs its own `structuralReplayCoordinator.run`; calling it
+  from `applyReattachPayload` (already a coordinator task when a replay
+  exists) deadlocks on the coordinator's tail chain. The inline paint
+  mirrors the daemon-snapshot branch (folded `scrollbackAnsi` + screen,
+  dimension-matched resize, escape tail written last) and arms
+  `setRestoredSnapshotBaseline` + `recordRendererOrderedSeq` so deferred and
+  live chunks the snapshot already covers dedupe instead of double-painting.
+- The passive-hibernation reattach branch (empty adopted shell with
+  completed-hibernation evidence) takes its fresh-restore path before any of
+  this and is unchanged.
 
-What breaks or degrades if a worktree is evicted without further work:
+### 2.2 Slice B — force-park retention budget
 
-| surface | behavior after eviction | mitigation available |
-|---|---|---|
-| Bells/titles/completions/PR links | dark unless a watcher covers the tab; watcher predicate today requires snapshot-backed pty (`terminal-parked-tab-watchers.ts:92-109`) | fact-mode works for SSH/local/fail-open (bytes transit main); only remote-runtime lacks the channel |
-| Agent status (sidebar) | main-side `agentDetector`/OSC processing runs at ingestion regardless of panes (`orca-runtime.ts:7500-7505`); remote-runtime status flows via runtime graph | verify per-surface in tests |
-| Reveal content, local daemon-backed | full daemon snapshot reattach — today's parked path (`pty-connection.ts:7892-7933`) | none needed |
-| Reveal content, SSH | relay replay: last 100 KiB raw bytes, no dimension match; empty after relay restart; `SSH_SESSION_EXPIRED` → blank fresh shell (`ssh-pty-session-reattach.ts:39-81`, `pty-connection.ts:7746-7752`) | main headless snapshot upgrade (Option A) |
-| Reveal content, remote-runtime | current screen only, zero scrollback | RPC change to request scrollback rows (exists server-side for mobile) |
-| Reveal content, daemon-fail-open (separator-less id) | generic path fresh-spawns, **orphaning the live pty** (`pty-connection.ts:7885,8106`) | exempt from eviction, or accept + 512 KB capture painted as cold-restore |
-| OSC 133;D / Command Code facts | already dropped for parked tabs today (watcher omits `onCommandFinished`/`onCommandCode*`, cf. `pty-connection.ts:2212-2234`) — pre-existing gap, unchanged | out of scope |
-| Snapshot restore fidelity, folder workspaces | folder-workspace ids are worktree-shaped; `isSnapshotBackedTerminalPty` passes identically (`pty-session-id.ts:21-25`) — no special-case needed | covered by tests |
-| Input during eviction | impossible (hidden worktree has no focused pane); parked-tab input path already routes `window.api.pty.write` (`terminal-parked-tab-watchers.ts:143`) | n/a |
+Force-park, NOT unmount-from-`mountedWorktreeIdsRef`: force-parked ids join
+the existing parked set after the coverage veto
+(`selectRetentionForceParkedTerminalWorktrees`,
+`terminal-hidden-worktree-retention.ts`), so every downstream mechanism —
+render null, watcher sync, reveal — is the ordinary parking machinery. The
+only new state is the verdict itself.
 
-## 4. Options
+- Candidates: hidden, mounted, un-parkable worktrees (ordinary parking
+  doesn't cover them), excluding visible / measuring / portal-holding /
+  pending-spawn ones, past the 30 s cold-park hysteresis.
+- Budget: `TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT = 12` hidden un-parkable
+  worktrees, `TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS = 45 min` TTL,
+  evicted least-recently-hidden first. Ranking reuses
+  `selectIdsBeyondHotRetain` (`terminal-hidden-view-parking.ts:188`), so the
+  last-active exemption and deterministic ties hold here too: a SINGLE
+  hidden un-parkable worktree never force-parks — one warm slot is the
+  deliberate floor (slice C bounds it instead, §2.3).
+- **Eviction exemption is per-TAB, not per-worktree.** An eviction-exempt
+  tab (`isEvictionExemptTerminalTab`: a live local pty a remount could not
+  reattach — daemon-fail-open separator-less ids AND ptys minted under
+  another worktreeId; null/SSH/remote ids are not exempt) no longer vetoes
+  its worktree. The worktree force-parks while exempt tabs keep their
+  mounted panes via a per-tab exclusion mirroring the Activity-portal
+  pattern (legacy watcher sync + render in `Terminal.tsx`, and
+  `useTerminalTabColdParking` via the `isForceParked` prop). Exempt panes
+  need no watcher (they stay mounted); sibling tabs unmount with watcher
+  coverage where the transport exists. Ordinary parking eligibility is
+  untouched: a worktree with an exempt tab still cannot ordinary-park,
+  because eligibility requires every tab restorable.
+- Best-effort capture at force-park: the existing 512 KB
+  `shutdownBufferCaptures` serialization runs once per force-park episode
+  before the unmount render, so snapshot-less classes still reveal
+  last-known content cold-restore-style.
+- Damping: the verdict follows every existing convention — computed in the
+  worktree-parking effect, excluded from its own deps, set-equality guards
+  returning the previous reference, strictly-positive recheck timers (the
+  retention TTL joins the deadline list), and time-monotone membership for
+  fixed inputs (unit-tested).
+- Reveal after force-park is the app-restart experience per class: local =
+  full daemon snapshot; SSH = model paint or relay replay (A); remote-runtime
+  = current screen + captured tail; bells/titles flow through fact-mode
+  watchers where bytes transit main, remote-runtime tabs go dark for those
+  (accepted, documented loss — agent status still flows via the runtime
+  graph).
 
-### Option A — Make SSH worktrees parkable (fidelity upgrade + eligibility)
+### 2.3 Slice C — scrollback demotion
 
-Convert the largest un-parkable class into ordinary parked citizens.
+`selectScrollbackDemotedTerminalWorktrees` demotes the hidden panes that
+stay mounted past the retention deadlines to
+`TERMINAL_DEMOTED_SCROLLBACK_ROWS` (= 1 000, the minimum tier):
 
-1. **Eligibility:** extend the parking predicate so an SSH pty
-   (`parseAppSshPtyId`) counts as restorable, gated on a per-pty "main model
-   available" signal rather than blanket exclusion. Keep remote-runtime,
-   separator-less, foreign-worktree, null exclusions unchanged.
-2. **Watcher coverage:** relax `canWatcherCoverParkedTerminalTab` for SSH to
-   the fact-mode availability predicate (bytes transit main). No new watcher
-   machinery: fact consumers already work for SSH.
-3. **Reveal fidelity:** on parked-SSH reveal, keep relay `pty.attach` as the
-   liveness authority (unchanged — respects the SSH reattach recovery chain),
-   but paint from `pty:getMainBufferSnapshot` (≈5000-row dimension-matched
-   serialized model, incl. `pendingEscapeTailAnsi`) when it returns non-null,
-   falling back to today's 100 KiB relay replay when it returns null (main
-   returns null after a delivery gap when only a tail is retained —
-   `src/main/ipc/pty.ts:4082-4090`). The fetch/apply/dedupe machinery exists
-   (`applyMainBufferSnapshot`, `pty-connection.ts:6561-6711`; seq-bounded via
-   `pendingDeliveryStartSeq`).
+1. **Exempt tabs' worktrees** — past the TTL, or immediately when their
+   worktree force-parks under the count budget (the exempt panes are then
+   the only panes left mounted there).
+2. **Spared un-parkable worktrees** — force-park candidates absent from the
+   force-parked set (the last-active exemption, or slice B switched off)
+   demote past the TTL, closing the single-worktree hole: one hidden
+   un-parkable worktree never force-parks, but its scrollback no longer
+   stays unbounded.
 
-- **Data loss / UX:** strictly better than today's *unmount* outcome and
-  bounded vs today's *retention* outcome: a re-activated parked SSH worktree
-  shows ~5k rows of scrollback instead of (a) full renderer buffer at
-  unbounded memory cost, or (b) 100 KiB raw replay. Bells/titles/completions
-  stay live via facts. Scroll position restored as bottom-offset intent like
-  local parks.
-- **Flip-loop surface:** none new — same verdict machinery, one more class
-  passes the existing (damped) filter. The eligibility signal must be stable
-  (derive from pty id shape + a monotone capability latch, never from
-  fetch-time success/failure).
-- **Blast radius:** parking predicate, watcher predicate, SSH reveal paint
-  path. No main-process changes required (snapshot IPC exists).
-- **Rollback:** the existing `terminalHiddenViewParking` kill switch disables
-  the whole lever; a class-scoped flag (`parkSshTerminals`) can gate just
-  this.
-- **Limit:** does nothing for remote-runtime / fail-open / foreign-pty /
-  uncoverable classes; retention stays eligibility-bounded for them.
+Demotion applies through each mounted pane's lifecycle hook
+(`useTerminalWorktreeScrollbackDemoted` →
+`applyTerminalScrollbackRowsToMountedPanes`) — an xterm option update only,
+no remount/replay/refit/SIGWINCH. Trimmed history is gone by design; reveal
+restores the configured cap for future output. Measured reclaim at 50k-row
+settings: 19.4 → 1.3 MB V8 heap and 114.7 → 2.7 MB ArrayBuffers per pane.
+Membership is time-monotone for fixed inputs (unit-tested): the force-parked
+and past-TTL sets only grow with time and the last-active pick is
+time-independent.
 
-### Option B — Hard mounted-worktree budget applied BEFORE parkability (the actual memory bound)
+### 2.4 Hidden clock vs transient background mounts
 
-The task's stated goal — memory-bounded rather than eligibility-bounded —
-requires an eviction lever that does not consult eligibility.
+Whole-worktree background mounts (browser-automation bootstrap lease at
+`useIpcEvents.ts:222`, mobile mounts, agent wakes) open a ~3 s self-clearing
+measure window (`scheduleBackgroundTerminalWorktreeMeasure`). The window
+pauses every parking/retention/demotion verdict (all selectors skip
+measuring candidates) but no longer resets `hiddenSince` — previously each
+remount restarted the 30 s hysteresis and the 45 min TTL, so a periodically
+re-mounted force-parked worktree never re-parked. Now the prior verdict
+resumes at the next effect pass after the window closes; residual churn is
+one mount/re-park cycle per external mount event, externally driven and
+bounded (no render-loop surface). Visibility and Activity portals still
+reset the clock. The browser-automation lease keeps its unrestricted
+worktree mount: hidden browser panes mount only for unrestricted background
+mounts (`backgroundMountTabIds === null`), so tab-restricting the lease
+would break hidden-browser automation.
 
-1. In the existing worktree-parking effect (`Terminal.tsx:822-921`), after
-   the parked-set selection, rank **all** hidden mounted worktrees (parkable
-   or not) by `hiddenSinceMs`, with the same exemptions parking already
-   honors (visible, measurable, portal-holding, pending startup/activation
-   spawn, last-active). Beyond a budget `MAX_MOUNTED_HIDDEN_WORKTREES`
-   (proposed 12) **or** past a long TTL (proposed 45 min) for un-parkable
-   ones, **evict**: delete from `mountedWorktreeIdsRef`, drop restriction
-   maps and `hiddenSince` (the deletion path that already exists for removed
-   worktrees, `Terminal.tsx:1031-1037`), bump a revision state guarded by
-   set-equality.
-2. Eviction = full unmount; re-activation is identical to first activation
-   after boot (reattach per class; Option A upgrades the SSH case). Start
-   fact-mode watchers for evicted tabs where the transport exists (SSH,
-   local, fail-open); remote-runtime tabs go dark for bells/titles (agent
-   status still flows via the runtime graph) — accepted, documented loss.
-3. Class carve-outs: separator-less daemon-fail-open tabs are exempt from
-   eviction (remount would fresh-spawn and orphan the live pty,
-   `pty-connection.ts:8106`) — they fall to Option C instead.
-4. Best-effort capture at eviction: run the existing 512 KB
-   `shutdownBufferCaptures` serialization (`TerminalPane.tsx:2347-2389`,
-   `terminal-shutdown-layout-capture.ts:49-152`) into
-   `layout.buffersByLeafId` before unmount, so even a snapshot-less remount
-   paints last-known content cold-restore-style rather than blank.
+## 3. Kill switches — coupling and revert matrix
 
-- **Data loss / UX:** an evicted worktree re-activates like after an app
-  restart: local = full snapshot; SSH = 5k rows (with A) or 100 KiB replay;
-  remote-runtime = current screen + captured tail. Worst case is strictly
-  the app-restart experience users already have.
-- **Flip-loop surface:** the new verdict follows every existing damping rule:
-  computed in the same effect, excluded from its own deps, set-equality
-  guard, positive-delay recheck timers, and eviction is monotone (a worktree
-  leaves the set; only real activation/background-mount events re-add it).
-  The one cyclical risk is a periodic background-mount re-mounting an evicted
-  worktree (browser-automation lease, mobile subscribe); cadence is bounded
-  below by the 30 s hysteresis + TTL, and the eviction ranking must treat a
-  re-mounted worktree as freshly hidden (it does — `hiddenSince` restarts).
-- **Blast radius:** Terminal.tsx effect, watcher predicate (shared with A),
-  capture call, new policy function + constants in
-  `terminal-hidden-view-parking.ts`. No main changes.
-- **Rollback:** new setting `terminalMountedWorktreeBudget` (0/absent =
-  disabled) independent of the parking kill switch; ship default-on in rc,
-  flip default via settings if the field disagrees.
+All four are optional booleans on settings read as `!== false` (default ON);
+there is no DEFAULT_SETTINGS object to mirror (`src/shared/types.ts:2815`).
 
-### Option C — Scrollback demotion for eviction-exempt hidden panes
+| switch | scope |
+|---|---|
+| `terminalHiddenViewParking` | master: all parking, incl. every C1 slice |
+| `terminalSshViewParking` | A: SSH eligibility + model-paint upgrade |
+| `terminalHiddenWorktreeRetentionBudget` | B: force-park budget |
+| `terminalHiddenScrollbackDemotion` | C: demotion |
 
-For panes that must stay mounted (fail-open class; any future exempt class):
-after the hot-retain TTL hidden, set `terminal.options.scrollback` to 1 000
-and back on reveal. Reclaims ~80 % of the xterm graph (19 MB → ~2.5 MB at
-50k settings) with zero mount-topology change, zero coverage change, zero
-flip-loop surface (no React state involved; a pane-manager pass over hidden
-panes). Cost: trimmed history for long-hidden panes of that class; does not
-bound pane count, fibers, or the H2 queue.
+Coupling: master off ⇒ nothing parks, force-parks, or demotes. A, B, C are
+otherwise independent of each other (C stopped requiring B's switch in this
+branch's review pass).
 
-### Option D — Byte-weighted hot-retain budget (refinement, not proposed now)
+Revert matrix:
 
-Replace count caps with a byte budget using `terminal.buffer.active.length`
-per mounted pane. With A+B in place the count caps stop being the binding
-constraint; defer unless field data shows the warm set itself is the residual
-problem. (Also candidates for follow-up hygiene, not this fix: making the
-12-tab cap global rather than per-worktree; capping `pendingSideEffects`,
-which is H2's own fix.)
+| revert | resulting behavior |
+|---|---|
+| A off, B on | SSH rejoins the un-parkable class ⇒ force-parks past budget/TTL; reveal paints the relay replay only (the model probe is A-gated). Main's dropped-byte `pty:modelRestoreNeeded` repaint still applies. |
+| B off, A on | SSH parks ordinarily; other un-parkable classes are retained unbounded again, except C's TTL demotion still bounds their scrollback. |
+| C off | exempt tabs in force-parked worktrees and last-active-spared worktrees keep full scrollback indefinitely. |
+| master off | pre-parking behavior: every mounted worktree retained forever. |
 
-## 5. Recommendation (ranked)
+## 4. Retention floor — what stays mounted, and when OOM is still possible
 
-**Ship A + B together, C as the carve-out companion, D deferred.**
+Worst-case mounted-pane fleet with all switches on:
 
-- A alone fixes the dominant observed class (SSH; the zero-git OOM bundle)
-  with the smallest risk, but leaves retention eligibility-bounded — any new
-  pty class silently re-opens unlimited retention.
-- B alone bounds everything but delivers a worse SSH reveal (100 KiB replay)
-  than A makes possible, and SSH is the class users will actually hit.
-- A+B: retention is memory-bounded for every class, and the highest-traffic
-  class re-activates at near-local fidelity. C covers the one class B must
-  exempt. All three are independently kill-switchable.
+- up to **8** warm parkable hidden worktrees (`TERMINAL_WORKTREE_HOT_RETAIN_LIMIT`,
+  ≤ 12 tabs each per the per-worktree tab cap), plus
+- up to **12** un-parkable hidden worktrees inside the 45 min TTL
+  (`TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT`), plus
+- **1** last-active slot per cap (parkable and un-parkable rankings each
+  spare the most recently hidden candidate), plus
+- **eviction-exempt TABS** inside force-parked worktrees (post-review:
+  tabs, not whole worktrees) — mounted indefinitely but demoted to 1 000
+  rows once their worktree force-parks or passes the TTL, plus
+- visible, portal-holding, measuring, and pending-spawn worktrees.
 
-Suggested landing order (single branch, separable commits): policy module +
-tests → A (eligibility + watcher predicate + SSH paint) → B (budget +
-eviction + capture) → C (demotion). If the gate wants a smaller first slice:
-A alone is shippable and reversible; B follows in the same release train.
+At the ~2.5 MB/pane default that floor is low-hundreds of MB in pathological
+many-worktree profiles and falls with the TTL; demotion caps the
+indefinitely-mounted exempt panes at ~1.3 MB heap each.
 
-## 6. Test plan
+**When OOM is still possible.** The floor bounds pane count, not per-pane
+growth inside it: the uncapped `pendingSideEffects` queue
+(`terminal-pane/pty-transport.ts:157`, H2) still grows without bound inside
+a visible or warm pane under background timer throttling and needs its own
+cap + drain fix. An unbounded number of eviction-exempt tabs (mass fail-open
+daemon degradation) would also stack demoted-but-mounted panes. And the
+1.4.15x field builds additionally lack the H3 ack fix. The instrumentation
+branch (`crash-c1-heap-leak-diagnosis` @ 57f39c369b) measures all of this in
+the field and composes with this fix unchanged.
 
-Unit (vitest):
-- `terminal-hidden-view-parking.test.ts` extensions: SSH ids eligible under
-  the new predicate; remote/fail-open/foreign still excluded; eviction
-  ranking (budget, TTL, exemptions, last-active, determinism); set-equality
-  no-op on unchanged recompute (currently untested, per the flip-loop
-  report); recheck-delay positivity for the new deadlines.
-- Watcher predicate: fact-mode coverage accepted for SSH pty ids; remote
-  runtime still uncoverable; capture-staleness on pty re-mint unchanged.
-- Eviction reducer/helper: restriction maps and hiddenSince cleaned;
-  fail-open exemption; capture invoked before unmount.
-- SSH reveal paint: snapshot-preferred, relay-replay fallback on null, seq
-  dedupe bound honored (mock transport).
+## 5. Test matrix
 
-E2E (Playwright, existing harness `tests/e2e/terminal-hidden-view-parking.spec.ts`
-patterns + `terminal-parked-memory.spec.ts`):
-- SSH-workspace park/reveal fidelity (extend the existing SSH e2e rig);
-  bell/title while an SSH worktree is parked.
-- Eviction: activate N>budget worktrees with streaming tabs, assert panes
-  beyond budget unmount (`terminalElements` census), reveal restores, and
-  memory falls (parked-memory spec pattern).
-- Folder-workspace park/evict/reveal parity (project rule).
-- Flip-loop guard: drive 25 evict/re-activate cycles (mirror of the existing
-  25-cycle park spec `:467`), assert no React #185 and byte-for-byte restore
-  where snapshot-backed.
-- Legacy path: not covered (dead code; assert only that the worktree-level
-  verdict still compiles it out — no new machinery).
+| coverage | status |
+|---|---|
+| SSH eligibility / watcher predicate / paint-source decisions (incl. composed-payload emptiness) | landed, unit (`terminal-hidden-view-parking.test.ts`, `terminal-parked-tab-watchers.test.ts`, `ssh-reattach-model-restore.test.ts`) |
+| Force-park selector: budget, TTL, last-active, exemptions, idempotence + time-monotone membership (flip-loop condition 4) | landed, unit (`terminal-hidden-worktree-retention.test.ts`) |
+| Demotion selector: exempt/force-parked/spared cases, TTL override, idempotence + monotone; registry notify damping; row clamp | landed, unit |
+| Folder-workspace parity (worktree-shaped id equality) | landed, unit; the local parking e2e runs on folder-workspace-shaped ids |
+| Local park/reveal + 25-cycle flip-loop guard | pre-existing e2e (`terminal-hidden-view-parking.spec.ts`), green |
+| SSH park+reveal round-trip with model-paint depth proof (early marker beyond the relay's 100 KiB buffer) | landed, Docker-gated e2e (`ssh-terminal-parking.spec.ts`, `ORCA_E2E_SSH_DOCKER=1`) |
+| Retention-budget (force-park) live e2e | follow-up: needs ≥2 un-parkable hidden worktrees (the last-active exemption shields one) — an e2e `retentionLimit` override (pattern: `terminal-parking-e2e-overrides.ts`, gated on `e2eConfig.exposeStore`) plus `terminalSshViewParking=false` on the Docker SSH rig |
+| Remote-runtime live eviction e2e | follow-up (selector-level coverage landed) |
 
-Gates: `oxfmt --check -c .oxfmtrc.json` on changed files, oxlint, typecheck,
-targeted vitest suites; no max-lines disables.
+## 6. Residuals and follow-ups
 
-## 7. Rollout / rollback
-
-- Three independent switches: existing `terminalHiddenViewParking` (master),
-  new `parkSshTerminals` (A), new `terminalMountedWorktreeBudget` (B; 0
-  disables, also disables C's TTL demotion). Defaults on in rc.
-- Composes with the instrumentation branch: its `paneTerminals` census and
-  precise-memory highwater directly measure this fix's effect in the field
-  (expected signature: `paneTerminals.live` plateaus at the budget; heap
-  staircase flattens after the warm window).
-- Revert story: each option is a separable commit; B's eviction is additive
-  to the parking effect and reverts cleanly; A's paint change falls back to
-  the relay-replay branch which remains intact.
-
-## 8. Implementation notes (as built — deltas and residuals)
-
-Landed as four commits on this branch (A, B, C, plus an A paint-path fix):
-
-1. **A paint is inline, not via `applyMainBufferSnapshot`.** That function
-   runs its own `structuralReplayCoordinator.run`; calling it from
-   `applyReattachPayload` (already inside the coordinator when a relay replay
-   exists) deadlocks on the coordinator's tail chain. The paint mirrors the
-   daemon-snapshot branch (folded `scrollbackAnsi` + rehydrate + screen,
-   dimension-matched, escape tail last) and arms
-   `setRestoredSnapshotBaseline` so deferred/live chunks the snapshot covers
-   dedupe instead of double-painting.
-2. **B is force-park, not unmount-from-`mountedWorktreeIdsRef`.** Force-parked
-   ids join the existing parked set after the coverage veto, so every
-   downstream mechanism (render null, watcher sync, reveal) is the ordinary
-   parking machinery; the only new state is the verdict itself. Blast radius
-   shrank accordingly.
-3. **Last-active exemption applies to eviction too** (ranking reuses
-   `selectIdsBeyondHotRetain`): a SINGLE hidden un-parkable worktree is never
-   force-parked — one warm slot is the deliberate floor, matching parking
-   semantics. The field profile this targets is many-worktree.
-4. **Residual: empty relay replay on parked-SSH reveal.** If relay `buffered`
-   is empty (relay restart), `hasStructuralReplay` is false and nothing
-   paints (pre-existing app-restart behavior). When the hidden-delivery gate
-   dropped bytes during the park, main's `pty:modelRestoreNeeded` marker
-   fires on reveal and repaints from the model with seq dedupe — so the
-   blank case is confined to relay-restart with no dropped-byte marker.
-5. **Residual (pre-existing, unchanged):** parked/evicted fact-mode watchers
-   omit `onCommandFinished`/`onCommandCode*`; OSC 133;D command-lifecycle
-   facts drop while parked.
-
-Test coverage vs gate condition 5:
-- SSH park+reveal round-trip with scrollback-depth assertion:
-  `tests/e2e/ssh-terminal-parking.spec.ts` (Docker-gated,
-  `ORCA_E2E_SSH_DOCKER=1`, same lane as the other SSH relay specs) + unit
-  coverage of eligibility/coverage/paint-source decisions.
-- Folder workspaces: unit parity case (worktree-shaped id equality) in
-  `terminal-hidden-view-parking.test.ts`; the local parking e2e already runs
-  on folder-workspace-shaped ids.
-- Remote-runtime eviction under B: covered at the selector level
-  (`terminal-hidden-worktree-retention.test.ts`); a live e2e needs either two
-  remote worktrees in the rig or a retention-limit e2e override (the
-  last-active exemption shields a single candidate) — follow-up, noted here
-  so it isn't lost.
-- Fail-open exemption: unit-covered (`isEvictionExemptTerminalTab` + selector
-  exclusion case).
-- C demotion+restore: unit-covered (selector TTL/monotone cases, registry
-  notify damping, row clamp); demotion applies through the same
-  `applyTerminalScrollbackRowsToMountedPanes` path the existing
-  settings-change e2e exercises.
-- Flip-loop regression (condition 4): policy-level idempotence +
-  time-monotone membership tests for both new selectors, plus notify damping
-  on the demotion registry; the component-level damping conventions (verdict
-  out of own deps, set-equality bail, positive-delay timers) are preserved
-  unchanged.
+1. H2 `pendingSideEffects` cap + drain (§4) — separate fix.
+2. Retention-budget and remote-runtime live e2e (§5).
+3. Pre-existing, unchanged: parked/evicted fact-mode watchers omit
+   `onCommandFinished`/`onCommandCode*`; OSC 133;D command-lifecycle facts
+   drop while parked.
+4. Remote-runtime reveal depth: the desktop subscribe snapshot is
+   screen-only; the runtime host already serves scrollback to mobile
+   (`src/main/runtime/rpc/methods/terminal.ts:688` vs `:697`) — an RPC
+   change could upgrade force-parked remote reveals.
+5. Background-mount churn: one mount/re-park cycle per external mount event
+   remains (§2.4); revisit only if field telemetry shows lease-driven
+   thrash at meaningful cadence.

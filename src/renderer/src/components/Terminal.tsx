@@ -874,10 +874,17 @@ function Terminal(): React.JSX.Element | null {
       const shouldMeasureHiddenWorktree =
         !isVisible && measurableBackgroundWorktreeIdsRef.current.has(worktreeId)
       const hasActivityTerminalPortal = portalWorktreeIds.has(worktreeId)
-      if (isVisible || shouldMeasureHiddenWorktree || hasActivityTerminalPortal) {
+      if (isVisible || hasActivityTerminalPortal) {
         terminalWorktreeHiddenSinceRef.current.delete(worktreeId)
-      } else if (!terminalWorktreeHiddenSinceRef.current.has(worktreeId)) {
-        terminalWorktreeHiddenSinceRef.current.set(worktreeId, nowMs)
+      } else if (!shouldMeasureHiddenWorktree) {
+        // Why measuring is excluded here but still pauses the verdicts below:
+        // the ~3s background-measure window (automation lease, mobile mount,
+        // agent wake) is transient — resetting hiddenSince would restart the
+        // 30s hysteresis AND the 45min retention TTL on every remount, so a
+        // periodically re-mounted force-parked worktree would never re-park.
+        if (!terminalWorktreeHiddenSinceRef.current.has(worktreeId)) {
+          terminalWorktreeHiddenSinceRef.current.set(worktreeId, nowMs)
+        }
       }
 
       retentionCandidates.push({

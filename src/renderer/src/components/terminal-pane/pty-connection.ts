@@ -7386,33 +7386,28 @@ export function connectPanePty(
       // Why (C1 SSH parking): main's headless model holds ~5k rows for SSH ptys
       // while the relay replay is a 100KiB raw-byte tail; prefer the model on
       // reveal. Only a non-empty 'headless'-sourced snapshot qualifies — the
-      // renderer-serializer fallback has no mounted xterm after a park.
-      const tryApplySshMainModelReattachSnapshot = async (): Promise<boolean> => {
+      // renderer-serializer fallback has no mounted xterm after a park. The
+      // paint happens inline in the snapshot-branch style: applyMainBufferSnapshot
+      // would nest structuralReplayCoordinator.run inside the reattach task and
+      // deadlock on the coordinator's tail chain.
+      const fetchSshMainModelReattachSnapshot = async (): Promise<PtyBufferSnapshot | null> => {
         const sshParkingEnabled = useAppStore.getState().settings?.terminalSshViewParking !== false
         if (!shouldFetchSshReattachModelSnapshot({ ptyId, sshParkingEnabled })) {
-          return false
+          return null
         }
         const snapshot = await window.api.pty
           .getMainBufferSnapshot(ptyId, {
             scrollbackRows: resolveHiddenRestoreScrollbackRows(pane.terminal.options.scrollback)
           })
           .catch(() => null)
-        if (!isCurrentReattachPayload()) {
-          // Why: a superseded attempt must not paint, but reporting true would skip the replay fallback of the live attempt.
-          return true
-        }
         if (
           !snapshot ||
           decideSshReattachPaintSource({ ptyId, sshParkingEnabled, snapshot }) !==
             'main-model-snapshot'
         ) {
-          return false
+          return null
         }
-        rememberReattachPayloadAgentSignal(snapshot.data, { fullScreenReplay: true })
-        kittyKeyboardModes.scanReplay(snapshot.data)
-        await applyMainBufferSnapshot(snapshot)
-        sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
-        return true
+        return snapshot
       }
       const applyReattachPayload = async (): Promise<void> => {
         if (!isCurrentReattachPayload()) {
@@ -7459,26 +7454,59 @@ export function connectPanePty(
             }
           }
         } else if (connectResult?.replay) {
-          if (await tryApplySshMainModelReattachSnapshot()) {
-            if (connectResult.coldRestore && !isRemoteRuntimePtyId(ptyId)) {
-              window.api.pty.ackColdRestore(ptyId)
-            }
-            return
-          }
+          const modelSnapshot = await fetchSshMainModelReattachSnapshot()
           if (!isCurrentReattachPayload()) {
             return
           }
-          rememberReattachPayloadAgentSignal(connectResult.replay, { fullScreenReplay: true })
-          // Relay replay may overlap xterm's pre-disconnect content; clear first to avoid duplication.
-          writeReplayData('\x1b[2J\x1b[3J\x1b[H')
-          // Why: raw relay replay may contain the app's own kitty pushes; re-arm with set semantics so redelivery can't grow the stack.
-          kittyKeyboardModes.scanReplay(connectResult.replay)
-          writeReplayData(connectResult.replay)
-          writeReplayData(reattachReplayResetSequence(connectResult.replay))
-          sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
-          if (connectResult.coldRestore) {
-            if (!isRemoteRuntimePtyId(ptyId)) {
+          if (modelSnapshot) {
+            // Why folded: main returns scrollbackAnsi separately; the daemon
+            // adapter composes scrollback + rehydrate + screen into one payload
+            // and this paint mirrors that composition on a fresh xterm.
+            const modelData = `${modelSnapshot.scrollbackAnsi ?? ''}${modelSnapshot.data}`
+            rememberReattachPayloadAgentSignal(modelData, { fullScreenReplay: true })
+            const modelCols = modelSnapshot.cols
+            const modelRows = modelSnapshot.rows
+            if (
+              modelCols > 0 &&
+              modelRows > 0 &&
+              (pane.terminal.cols !== modelCols || pane.terminal.rows !== modelRows)
+            ) {
+              // Why: replay at the snapshot's own dimensions (see the daemon-snapshot branch, #7279).
+              suppressStructuralReplayPtyResize = true
+              try {
+                pane.terminal.resize(modelCols, modelRows)
+              } finally {
+                suppressStructuralReplayPtyResize = false
+              }
+            }
+            writeReplayData('\x1b[2J\x1b[3J\x1b[H')
+            kittyKeyboardModes.scanReplay(modelData)
+            writeReplayData(modelData)
+            writeReplayData(reattachReplayResetSequence(modelData))
+            if (modelSnapshot.pendingEscapeTailAnsi) {
+              // Why last: re-arm the dangling mid-escape after the reset so the live continuation completes it (#7329).
+              writeReplayData(modelSnapshot.pendingEscapeTailAnsi)
+            }
+            // Why: main sampled its delivery backlog with the snapshot; the baseline drops/slices deferred and live chunks the snapshot already covers.
+            setRestoredSnapshotBaseline(ptyId, modelSnapshot)
+            recordRendererOrderedSeq(modelSnapshot)
+            sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
+            if (connectResult.coldRestore && !isRemoteRuntimePtyId(ptyId)) {
               window.api.pty.ackColdRestore(ptyId)
+            }
+          } else {
+            rememberReattachPayloadAgentSignal(connectResult.replay, { fullScreenReplay: true })
+            // Relay replay may overlap xterm's pre-disconnect content; clear first to avoid duplication.
+            writeReplayData('\x1b[2J\x1b[3J\x1b[H')
+            // Why: raw relay replay may contain the app's own kitty pushes; re-arm with set semantics so redelivery can't grow the stack.
+            kittyKeyboardModes.scanReplay(connectResult.replay)
+            writeReplayData(connectResult.replay)
+            writeReplayData(reattachReplayResetSequence(connectResult.replay))
+            sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
+            if (connectResult.coldRestore) {
+              if (!isRemoteRuntimePtyId(ptyId)) {
+                window.api.pty.ackColdRestore(ptyId)
+              }
             }
           }
         } else if (connectResult?.coldRestore) {

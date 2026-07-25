@@ -23,6 +23,18 @@ describe('isSnapshotBackedTerminalPty', () => {
     expect(isSnapshotBackedTerminalPty('wt-1@@session-1', 'wt-1')).toBe(true)
   })
 
+  // Why: folder workspaces mint worktree-shaped ids; parking must treat them identically (project rule).
+  it('allows folder-workspace sessions owned by the workspace', () => {
+    const folderWorkspaceId =
+      'repo-1::/Users/dev/proj::workspace:6f9619ff-8b86-4d01-b42d-00cf4fc964ff'
+    expect(isSnapshotBackedTerminalPty(`${folderWorkspaceId}@@session-1`, folderWorkspaceId)).toBe(
+      true
+    )
+    expect(isSnapshotBackedTerminalPty(`${folderWorkspaceId}@@session-1`, 'repo-1::/other')).toBe(
+      false
+    )
+  })
+
   // Why: separator-less ids ('1', '2', 'pty-local-detached') come from the
   // daemon-fail-open LocalPtyProvider and have no daemon session model —
   // revealing a parked pane would silently respawn a fresh shell, so they

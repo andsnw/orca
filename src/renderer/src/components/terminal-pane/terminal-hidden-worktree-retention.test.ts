@@ -185,21 +185,25 @@ describe('selectScrollbackDemotedTerminalWorktrees', () => {
     expect(selected).toEqual(new Set(['wt-aged']))
   })
 
-  it('returns empty when any kill switch is off', () => {
+  it('returns empty when the master or demotion switch is off', () => {
     const worktrees = [exemptCandidate('wt-aged', aged)]
     expect(
       selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, parkingEnabled: false })
     ).toEqual(new Set())
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, demotionEnabled: false })
+    ).toEqual(new Set())
+  })
+
+  it('demotes independently of the slice-B retention-budget switch', () => {
+    const worktrees = [exemptCandidate('wt-aged', aged)]
     expect(
       selectScrollbackDemotedTerminalWorktrees({
         ...base,
         worktrees,
         retentionBudgetEnabled: false
       })
-    ).toEqual(new Set())
-    expect(
-      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, demotionEnabled: false })
-    ).toEqual(new Set())
+    ).toEqual(new Set(['wt-aged']))
   })
 
   it('honors the retentionTtlMs override and stays time-monotone', () => {

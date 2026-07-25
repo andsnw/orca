@@ -980,13 +980,7 @@ function Terminal(): React.JSX.Element | null {
     )
     const retentionTtlEligibleIds = new Set(
       retentionBudgetCandidates
-        .filter(
-          (candidate) =>
-            !candidate.ordinaryParkingCovers &&
-            !candidate.hasPendingSpawnWork &&
-            // Why: exempt worktrees still need the TTL wakeup — it fires their scrollback demotion.
-            (!candidate.hasEvictionExemptTab || terminalScrollbackDemotionEnabled)
-        )
+        .filter((candidate) => !candidate.ordinaryParkingCovers && !candidate.hasPendingSpawnWork)
         .map((candidate) => candidate.worktreeId)
     )
 
@@ -1004,8 +998,10 @@ function Terminal(): React.JSX.Element | null {
         hiddenSinceMs: candidate.hiddenSinceMs,
         nowMs,
         ...overrides,
-        // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary deadlines.
-        ...(terminalRetentionBudgetEnabled && retentionTtlEligibleIds.has(candidate.worktreeId)
+        // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary
+        // deadlines. Demotion (slice C) needs the wakeup too — it no longer requires slice B's switch.
+        ...((terminalRetentionBudgetEnabled || terminalScrollbackDemotionEnabled) &&
+        retentionTtlEligibleIds.has(candidate.worktreeId)
           ? {
               retentionTtlMs: overrides.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
             }

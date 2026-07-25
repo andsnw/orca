@@ -106,7 +106,10 @@ export function selectScrollbackDemotedTerminalWorktrees(
     nowMs: number
   } & TerminalColdParkPolicyOverrides
 ): Set<string> {
-  if (!args.parkingEnabled || !args.retentionBudgetEnabled || !args.demotionEnabled) {
+  // Why parkingEnabled still gates: it is the master kill switch — parking
+  // globally off means nothing parks OR demotes. Slice B's budget switch does
+  // not gate slice C; each slice reverts independently (approved contract).
+  if (!args.parkingEnabled || !args.demotionEnabled) {
     return new Set()
   }
   const ttlMs = args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS

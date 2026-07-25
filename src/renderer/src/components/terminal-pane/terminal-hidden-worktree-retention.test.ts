@@ -233,6 +233,61 @@ describe('selectScrollbackDemotedTerminalWorktrees', () => {
     ).toEqual(new Set(['wt-a', 'wt-b']))
   })
 
+  it('demotes un-parkable non-exempt worktrees the force-park lever spared, past the TTL', () => {
+    // wt-solo is the only candidate → last-active exempt from force-park; its
+    // panes stay fully mounted forever unless demotion bounds them.
+    const solo = [exemptCandidate('wt-solo', aged, { hasEvictionExemptTab: false })]
+    expect(selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees: solo })).toEqual(
+      new Set(['wt-solo'])
+    )
+    // With slice B off nothing force-parks; every un-parkable worktree past
+    // the TTL demotes (C bounds independently).
+    const pair = [
+      exemptCandidate('wt-a', aged - 1, { hasEvictionExemptTab: false }),
+      exemptCandidate('wt-b', aged, { hasEvictionExemptTab: false })
+    ]
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({
+        ...base,
+        worktrees: pair,
+        retentionBudgetEnabled: false
+      })
+    ).toEqual(new Set(['wt-a', 'wt-b']))
+    // With slice B on, wt-a force-parks (unmounted — no demotion needed) and
+    // only the spared last-active wt-b demotes.
+    expect(selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees: pair })).toEqual(
+      new Set(['wt-b'])
+    )
+    // Ordinary-parking-covered worktrees are bounded by the warm cap already.
+    const covered = [
+      exemptCandidate('wt-covered', aged, {
+        hasEvictionExemptTab: false,
+        ordinaryParkingCovers: true
+      })
+    ]
+    expect(selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees: covered })).toEqual(
+      new Set()
+    )
+  })
+
+  it('is idempotent and only grows as time advances (flip-loop dwell)', () => {
+    const worktrees = [
+      exemptCandidate('wt-exempt', aged),
+      exemptCandidate('wt-force-parked', aged, { hasEvictionExemptTab: false }),
+      exemptCandidate('wt-last-active', nowMs - 60_000, { hasEvictionExemptTab: false })
+    ]
+    const first = selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees })
+    expect(selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees })).toEqual(first)
+    // Why: with unchanged inputs, a later evaluation may only ADD members —
+    // a verdict that oscillates with time is the React-#185 ingredient.
+    for (const laterMs of [nowMs + 1_000, nowMs + TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS]) {
+      const later = selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, nowMs: laterMs })
+      for (const id of first) {
+        expect(later.has(id)).toBe(true)
+      }
+    }
+  })
+
   it('honors the retentionTtlMs override and stays time-monotone', () => {
     const worktrees = [exemptCandidate('wt-1', nowMs - 500)]
     expect(

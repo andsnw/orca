@@ -96,11 +96,14 @@ export function selectRetentionForceParkedTerminalWorktrees(
 
 /**
  * Scrollback demotion targets the hidden panes that stay mounted past the
- * retention deadlines: eviction-exempt tabs' worktrees (their panes survive
- * force-park via the per-tab exclusion) demote past the TTL — or immediately
- * when their worktree force-parks under the count budget, since the exempt
- * panes are then the only ones left mounted. Time-monotone for fixed inputs:
- * the force-parked set and the past-TTL set only ever grow with nowMs, so
+ * retention deadlines: (a) eviction-exempt tabs' worktrees (their panes
+ * survive force-park via the per-tab exclusion) demote past the TTL — or
+ * immediately when their worktree force-parks under the count budget, since
+ * the exempt panes are then the only ones left mounted; (b) un-parkable
+ * worktrees the force-park lever spared (the last-active exemption, or slice
+ * B switched off) demote past the TTL instead of holding full scrollback
+ * forever. Time-monotone for fixed inputs: the force-parked and past-TTL sets
+ * only ever grow with nowMs and the last-active pick is time-independent, so
  * membership only grows until a reveal resets hiddenSince — no oscillation
  * surface.
  */
@@ -128,12 +131,20 @@ export function selectScrollbackDemotedTerminalWorktrees(
       worktree.isVisible ||
       worktree.shouldMeasureHiddenWorktree ||
       worktree.hasActivityTerminalPortal ||
-      !worktree.hasEvictionExemptTab ||
       worktree.hasPendingSpawnWork
     ) {
       continue
     }
-    if (args.nowMs - worktree.hiddenSinceMs >= ttlMs || forceParked.has(worktree.worktreeId)) {
+    const pastTtl = args.nowMs - worktree.hiddenSinceMs >= ttlMs
+    if (worktree.hasEvictionExemptTab) {
+      if (pastTtl || forceParked.has(worktree.worktreeId)) {
+        demoted.add(worktree.worktreeId)
+      }
+      continue
+    }
+    // Force-park candidates the lever spared stay fully mounted, so demotion
+    // is their only bound; force-parked ones already unmounted.
+    if (!worktree.ordinaryParkingCovers && pastTtl && !forceParked.has(worktree.worktreeId)) {
       demoted.add(worktree.worktreeId)
     }
   }

@@ -570,7 +570,10 @@ describe('closeTerminalTab', () => {
     const { onConfirm } = requestPinnedTabCloseConfirm.mock.calls[0][0] as { onConfirm: () => void }
     onConfirm()
 
-    expect(closeTab).toHaveBeenCalledWith('pinned-entity-1', { reason: undefined })
+    expect(closeTab).toHaveBeenCalledWith(
+      'pinned-entity-1',
+      expect.objectContaining({ reason: undefined })
+    )
     expect(closeUnifiedTab).not.toHaveBeenCalled()
     expect(onClosed).toHaveBeenCalledTimes(1)
   })
@@ -718,6 +721,36 @@ describe('closeTerminalTab', () => {
     closeTerminalTab('tab-1')
 
     expect(closeTab).toHaveBeenCalledWith('tab-1')
+  })
+
+  it('forwards registered provider teardown to close completion', () => {
+    const providerTeardown = new Promise<void>(() => {})
+    const closeTab = vi.fn(
+      (
+        _tabId: string,
+        options: { registerProviderTeardown?: (teardown: Promise<void>) => void }
+      ) => {
+        options.registerProviderTeardown?.(providerTeardown)
+      }
+    )
+    const onClosed = vi.fn()
+    getStateMock.mockReturnValue({
+      settings: { activeRuntimeEnvironmentId: null },
+      tabsByWorktree: {
+        'wt-1': [{ id: 'tab-1' }, { id: 'tab-2' }]
+      },
+      unifiedTabsByWorktree: {},
+      activeWorktreeId: 'wt-1',
+      activeTabId: 'tab-2',
+      openFiles: [],
+      browserTabsByWorktree: {},
+      closeTab,
+      setActiveTab: vi.fn()
+    })
+
+    closeTerminalTab('tab-1', { onClosed })
+
+    expect(onClosed).toHaveBeenCalledWith(providerTeardown)
   })
 })
 

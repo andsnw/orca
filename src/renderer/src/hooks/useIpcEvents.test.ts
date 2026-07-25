@@ -3257,8 +3257,12 @@ describe('useIpcEvents browser tab close routing', () => {
     expect(closeTerminalTabMock).toHaveBeenCalledWith('terminal-1')
   })
 
-  it('acknowledges whole-tab close only after the fresh session is durably persisted', async () => {
+  it('acknowledges whole-tab close only after provider teardown and durable persistence', async () => {
     const listenerRef: { current: TerminalTabCloseRequestListener | null } = { current: null }
+    let finishProviderTeardown!: () => void
+    const providerTeardown = new Promise<void>((resolve) => {
+      finishProviderTeardown = resolve
+    })
     let finishPersist!: () => void
     const persistWorkspaceSession = vi.fn(
       () =>
@@ -3267,8 +3271,9 @@ describe('useIpcEvents browser tab close routing', () => {
         })
     )
     const respondTerminalTabClose = vi.fn()
-    closeTerminalTabMock.mockImplementation((_tabId: string, options: { onClosed?: () => void }) =>
-      options.onClosed?.()
+    closeTerminalTabMock.mockImplementation(
+      (_tabId: string, options: { onClosed?: (providerTeardown: Promise<void>) => void }) =>
+        options.onClosed?.(providerTeardown)
     )
     await useIpcEventsForCloseRouting({
       getState: () => ({}),
@@ -3284,6 +3289,11 @@ describe('useIpcEvents browser tab close routing', () => {
       'terminal-1',
       expect.objectContaining({ rejectPinned: true })
     )
+    expect(persistWorkspaceSession).not.toHaveBeenCalled()
+    expect(respondTerminalTabClose).not.toHaveBeenCalled()
+
+    finishProviderTeardown()
+    await vi.waitFor(() => expect(persistWorkspaceSession).toHaveBeenCalledTimes(1))
     expect(persistWorkspaceSession).toHaveBeenCalledTimes(1)
     expect(respondTerminalTabClose).not.toHaveBeenCalled()
 

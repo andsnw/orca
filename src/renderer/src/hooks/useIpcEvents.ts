@@ -2027,8 +2027,9 @@ export function useIpcEvents(): void {
           closeTerminalTab(tabId, {
             rejectPinned: true,
             onCancel: () => respond('terminal_tab_pinned'),
-            onClosed: () => {
+            onClosed: (providerTeardown = Promise.resolve()) => {
               void (async () => {
+                await providerTeardown
                 const state = useAppStore.getState()
                 await persistWorkspaceSessionByHost(
                   window.api.session,

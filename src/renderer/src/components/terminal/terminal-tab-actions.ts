@@ -57,7 +57,7 @@ export function closeTerminalTab(
     localPtyTeardownOwnedExternally?: boolean
     precomputedRetirementPlan?: TerminalTabRetirementPlan
     precomputedCloseState?: PrecomputedTerminalCloseState
-    onClosed?: () => void
+    onClosed?: (providerTeardown?: Promise<void>) => void
     onCancel?: () => void
   }
 ): void {
@@ -78,6 +78,11 @@ export function closeTerminalTab(
     options?.onCancel?.()
     return
   }
+  let providerTeardown = Promise.resolve()
+  const registerProviderTeardown = (teardown: Promise<void>): void => {
+    providerTeardown = teardown
+  }
+  const providerTeardownRegistration = options?.onClosed ? { registerProviderTeardown } : {}
 
   // Why: a pinned tab routes through the confirmation guard instead of closing
   // outright. `force` is the post-confirmation re-entry, which skips the guard.
@@ -144,7 +149,8 @@ export function closeTerminalTab(
         : {}),
       ...(options?.precomputedRetirementPlan
         ? { precomputedRetirementPlan: options.precomputedRetirementPlan }
-        : {})
+        : {}),
+      ...providerTeardownRegistration
     })
     void closeWebRuntimeSessionTab({
       worktreeId: owningWorktreeId,
@@ -160,7 +166,7 @@ export function closeTerminalTab(
           }
         : {})
     })
-    options?.onClosed?.()
+    options?.onClosed?.(providerTeardown)
     return
   }
 
@@ -180,7 +186,8 @@ export function closeTerminalTab(
         : {}),
       ...(options?.precomputedRetirementPlan
         ? { precomputedRetirementPlan: options.precomputedRetirementPlan }
-        : {})
+        : {}),
+      ...providerTeardownRegistration
     })
     if (state.activeWorktreeId === owningWorktreeId) {
       // Why: only deactivate the worktree when no tabs of any kind remain.
@@ -200,7 +207,7 @@ export function closeTerminalTab(
         }
       }
     }
-    options?.onClosed?.()
+    options?.onClosed?.(providerTeardown)
     return
   }
 
@@ -222,9 +229,10 @@ export function closeTerminalTab(
     ...(options?.localPtyTeardownOwnedExternally ? { localPtyTeardownOwnedExternally: true } : {}),
     ...(options?.precomputedRetirementPlan
       ? { precomputedRetirementPlan: options.precomputedRetirementPlan }
-      : {})
+      : {}),
+    ...providerTeardownRegistration
   })
-  options?.onClosed?.()
+  options?.onClosed?.(providerTeardown)
 }
 
 export function activateTerminalTab(tabId: string): void {

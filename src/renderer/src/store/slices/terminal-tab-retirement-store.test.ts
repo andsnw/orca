@@ -120,6 +120,44 @@ describe('terminal tab retirement store boundary', () => {
     expect(capturedPanesByTabId.has('tab-1')).toBe(false)
   })
 
+  it('registers teardown that waits for every split PTY kill', async () => {
+    const store = createRetirementStore()
+    let finishSplitKill!: () => void
+    mockKill.mockImplementation((ptyId: string) =>
+      ptyId === 'pty-split'
+        ? new Promise<void>((resolve) => {
+            finishSplitKill = resolve
+          })
+        : Promise.resolve()
+    )
+    seedStore(store, {
+      tabsByWorktree: {
+        'wt-1': [makeTab({ id: 'tab-1', worktreeId: 'wt-1', ptyId: 'pty-primary' })]
+      },
+      ptyIdsByTabId: { 'tab-1': ['pty-primary', 'pty-split'] }
+    })
+    let providerTeardown: Promise<void> | undefined
+
+    store.getState().closeTab('tab-1', {
+      registerProviderTeardown: (teardown) => {
+        providerTeardown = teardown
+      }
+    })
+
+    expect(mockKill).toHaveBeenCalledTimes(2)
+    expect(providerTeardown).toBeDefined()
+    let teardownFinished = false
+    void providerTeardown!.then(() => {
+      teardownFinished = true
+    })
+    await Promise.resolve()
+    expect(teardownFinished).toBe(false)
+
+    finishSplitKill()
+    await providerTeardown
+    expect(teardownFinished).toBe(true)
+  })
+
   it('routes runtime handles to runtime close and preserves shared PTYs', async () => {
     const store = createRetirementStore()
     seedStore(store, {

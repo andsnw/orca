@@ -12,7 +12,8 @@ import { getParkedTerminalWatcherTabIds } from './terminal-parked-tab-watchers'
 export function getTerminalParkingPolicyOverrides(): TerminalColdParkPolicyOverrides {
   const delayMs = e2eConfig.exposeStore ? e2eConfig.terminalParkingDelayMs : null
   return typeof delayMs === 'number' && Number.isFinite(delayMs) && delayMs > 0
-    ? { coldParkDelayMs: delayMs, hotRetainMs: delayMs }
+    ? // Why retentionTtlMs too: the retention-budget e2e needs its 45min TTL shrunk the same way.
+      { coldParkDelayMs: delayMs, hotRetainMs: delayMs, retentionTtlMs: delayMs }
     : {}
 }
 

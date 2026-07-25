@@ -46,12 +46,13 @@ describe('getTerminalParkingPolicyOverrides', () => {
     expect(getTerminalParkingPolicyOverrides()).toEqual({})
   })
 
-  it('maps the e2e delay to BOTH coldParkDelayMs and hotRetainMs', async () => {
+  it('maps the e2e delay to coldParkDelayMs, hotRetainMs, and retentionTtlMs', async () => {
     mockE2EConfig = { exposeStore: true, terminalParkingDelayMs: 500 }
     const { getTerminalParkingPolicyOverrides } = await importOverridesModule()
     expect(getTerminalParkingPolicyOverrides()).toEqual({
       coldParkDelayMs: 500,
-      hotRetainMs: 500
+      hotRetainMs: 500,
+      retentionTtlMs: 500
     })
   })
 

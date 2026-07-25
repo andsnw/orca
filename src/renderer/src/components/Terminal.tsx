@@ -79,10 +79,18 @@ import { buildDuplicatedBrowserTabOptions } from '@/lib/duplicate-browser-tab-op
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { setForegroundTerminalTabIds } from '@/lib/foreground-terminal-tabs'
 import {
+  canParkTerminalWorktreeRenderers,
   getTerminalWorktreeColdParkRecheckDelayMs,
   selectColdParkedTerminalWorktrees,
   type TerminalWorktreeColdParkCandidate
 } from './terminal-pane/terminal-hidden-view-parking'
+import {
+  TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
+  isEvictionExemptTerminalTab,
+  selectRetentionForceParkedTerminalWorktrees,
+  type TerminalWorktreeRetentionCandidate
+} from './terminal-pane/terminal-hidden-worktree-retention'
+import { shutdownBufferCaptures } from './terminal-pane/shutdown-buffer-captures'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
 import {
@@ -269,6 +277,9 @@ function Terminal(): React.JSX.Element | null {
   const pendingStartupByTabId = useAppStore((s) => s.pendingStartupByTabId)
   const terminalParkingEnabled = useAppStore((s) => s.settings?.terminalHiddenViewParking !== false)
   const terminalSshParkingEnabled = useAppStore((s) => s.settings?.terminalSshViewParking !== false)
+  const terminalRetentionBudgetEnabled = useAppStore(
+    (s) => s.settings?.terminalHiddenWorktreeRetentionBudget !== false
+  )
   const terminalTitleSnapshotAuthorityEnabled = useAppStore((s) =>
     isMainTerminalSideEffectAuthorityForPty({
       settings: s.settings,
@@ -739,6 +750,8 @@ function Terminal(): React.JSX.Element | null {
   const [parkedTerminalWorktreeIds, setParkedTerminalWorktreeIds] = useState<ReadonlySet<string>>(
     () => new Set()
   )
+  // Why a ref: eviction captures buffers exactly once per force-park episode, before the unmount render.
+  const forceParkedCaptureDoneRef = useRef(new Set<string>())
   // Tab restriction for targeted background mounts (wake/resume); a worktree absent from this map mounts all its tabs.
   const backgroundMountTabIdsByWorktreeRef = useRef(new Map<string, ReadonlySet<string>>())
   // Why: only cold-activation deferral (not targeted mounts, which share the map above) creates watcher coverage for every unmounted tab.
@@ -881,10 +894,82 @@ function Terminal(): React.JSX.Element | null {
         nextParkedTerminalWorktreeIds.delete(worktreeId)
       }
     }
+    // C1 retention budget: worktrees ordinary parking can never evict (SSH off,
+    // remote-runtime, uncoverable tabs) force-park beyond a count/TTL bound —
+    // added AFTER the coverage veto because darkness for their uncoverable tabs
+    // is the accepted cost of bounding retention.
+    const restorePolicy = { sshParkingEnabled: terminalSshParkingEnabled }
+    const retentionBudgetCandidates: TerminalWorktreeRetentionCandidate[] = retentionCandidates.map(
+      (candidate) => {
+        const tabs = tabsByWorktree[candidate.worktreeId] ?? []
+        const parkEligible = canParkTerminalWorktreeRenderers({
+          ...candidate,
+          pendingStartupByTabId,
+          parkingEnabled: terminalParkingEnabled,
+          nowMs,
+          restorePolicy,
+          ...(overrides.coldParkDelayMs !== undefined
+            ? { coldParkDelayMs: overrides.coldParkDelayMs }
+            : {})
+        })
+        return {
+          worktreeId: candidate.worktreeId,
+          hiddenSinceMs: candidate.hiddenSinceMs,
+          isVisible: candidate.isVisible,
+          shouldMeasureHiddenWorktree: candidate.shouldMeasureHiddenWorktree,
+          hasActivityTerminalPortal: candidate.hasActivityTerminalPortal,
+          ordinaryParkingCovers:
+            parkEligible &&
+            tabs.every((tab) => canWatcherCoverParkedTerminalTab(candidate.worktreeId, tab)),
+          hasEvictionExemptTab: tabs.some((tab) =>
+            isEvictionExemptTerminalTab(tab, candidate.worktreeId)
+          ),
+          hasPendingSpawnWork: tabs.some(
+            (tab) =>
+              pendingStartupByTabId[tab.id] !== undefined ||
+              tab.pendingActivationSpawn === true ||
+              (typeof tab.pendingActivationSpawn === 'number' && tab.pendingActivationSpawn > 0)
+          )
+        }
+      }
+    )
+    const forceParkedWorktreeIds = selectRetentionForceParkedTerminalWorktrees({
+      worktrees: retentionBudgetCandidates,
+      parkingEnabled: terminalParkingEnabled,
+      retentionBudgetEnabled: terminalRetentionBudgetEnabled,
+      nowMs,
+      ...overrides
+    })
+    const capturedForceParked = forceParkedCaptureDoneRef.current
+    for (const id of Array.from(capturedForceParked)) {
+      if (!forceParkedWorktreeIds.has(id)) {
+        capturedForceParked.delete(id)
+      }
+    }
+    for (const worktreeId of forceParkedWorktreeIds) {
+      if (!capturedForceParked.has(worktreeId)) {
+        capturedForceParked.add(worktreeId)
+        // Why: serialize buffers while the panes still exist (same registry sleep uses), so classes with no snapshot source still reveal last-known content.
+        for (const tab of tabsByWorktree[worktreeId] ?? []) {
+          shutdownBufferCaptures.get(tab.id)?.()
+        }
+      }
+      nextParkedTerminalWorktreeIds.add(worktreeId)
+    }
     setParkedTerminalWorktreeIds((current) =>
       haveSameWorktreeIds(current, nextParkedTerminalWorktreeIds)
         ? current
         : nextParkedTerminalWorktreeIds
+    )
+    const retentionTtlEligibleIds = new Set(
+      retentionBudgetCandidates
+        .filter(
+          (candidate) =>
+            !candidate.ordinaryParkingCovers &&
+            !candidate.hasEvictionExemptTab &&
+            !candidate.hasPendingSpawnWork
+        )
+        .map((candidate) => candidate.worktreeId)
     )
 
     for (const candidate of retentionCandidates) {
@@ -900,7 +985,13 @@ function Terminal(): React.JSX.Element | null {
         parkingEnabled: terminalParkingEnabled,
         hiddenSinceMs: candidate.hiddenSinceMs,
         nowMs,
-        ...overrides
+        ...overrides,
+        // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary deadlines.
+        ...(terminalRetentionBudgetEnabled && retentionTtlEligibleIds.has(candidate.worktreeId)
+          ? {
+              retentionTtlMs: overrides.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+            }
+          : {})
       })
       if (delayMs !== null && delayMs > 0) {
         const worktreeId = candidate.worktreeId
@@ -920,6 +1011,7 @@ function Terminal(): React.JSX.Element | null {
     tabsByWorktree,
     terminalParkingEnabled,
     terminalParkingRevision,
+    terminalRetentionBudgetEnabled,
     terminalSshParkingEnabled,
     workspaceSurfaces
   ])

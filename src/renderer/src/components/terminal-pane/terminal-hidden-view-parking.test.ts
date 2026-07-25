@@ -592,6 +592,28 @@ describe('getTerminalWorktreeColdParkRecheckDelayMs', () => {
       })
     ).toBeNull()
   })
+
+  it('wakes at the retention TTL for budget candidates past the ordinary deadlines', () => {
+    expect(
+      getTerminalWorktreeColdParkRecheckDelayMs({
+        parkingEnabled: true,
+        hiddenSinceMs: 1_000,
+        nowMs: 2_500,
+        coldParkDelayMs: 100,
+        hotRetainMs: 1_000,
+        retentionTtlMs: 5_000
+      })
+    ).toBe(3_500)
+    expect(
+      getTerminalWorktreeColdParkRecheckDelayMs({
+        parkingEnabled: true,
+        hiddenSinceMs: 1_000,
+        nowMs: 2_500,
+        coldParkDelayMs: 100,
+        hotRetainMs: 1_000
+      })
+    ).toBeNull()
+  })
 })
 
 describe('getTerminalTabColdParkRecheckDelayMs', () => {

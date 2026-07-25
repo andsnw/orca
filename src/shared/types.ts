@@ -2840,6 +2840,8 @@ export type GlobalSettings = {
   terminalHiddenViewParking?: boolean
   /** Kill switch for SSH terminal parking (C1): SSH panes park like local ones; reveal restores from main's headless model, falling back to relay replay. */
   terminalSshViewParking?: boolean
+  /** Kill switch for the hidden-worktree retention budget (C1): force-parks the least-recently-hidden un-parkable worktrees beyond a count budget or TTL. */
+  terminalHiddenWorktreeRetentionBudget?: boolean
   /** Kill switch for main-process PTY side-effect authority; on (default) = title/bell/agent facts via pty:sideEffect channel, not renderer byte parsing. */
   terminalMainSideEffectAuthority?: boolean
   /** Kill switch for main's hidden-delivery gate (Phase 4): drops PTY bytes to hidden views after model ingestion; requires terminalMainSideEffectAuthority. */

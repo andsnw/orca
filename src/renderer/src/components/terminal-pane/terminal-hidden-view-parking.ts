@@ -24,6 +24,8 @@ export type TerminalColdParkPolicyOverrides = {
   coldParkDelayMs?: number
   hotRetainMs?: number
   hotRetainLimit?: number
+  retentionTtlMs?: number
+  retentionLimit?: number
 }
 
 export type ColdParkableTerminalTab = Pick<TerminalTab, 'id' | 'ptyId' | 'pendingActivationSpawn'>
@@ -158,7 +160,7 @@ export function canParkTerminalTabRenderer(args: {
   return isParkRestorableTerminalPty(tab.ptyId, args.worktreeId, args.restorePolicy)
 }
 
-type ColdParkRetainCandidate = { id: string; hiddenSinceMs: number }
+export type ColdParkRetainCandidate = { id: string; hiddenSinceMs: number }
 
 // Why: the single most-recently-hidden candidate is the view the user just
 // switched away from; keeping it warm regardless of the TTL or cap means
@@ -183,7 +185,7 @@ function selectLastActiveRetainedId(candidates: ColdParkRetainCandidate[]): stri
 // ids hidden past hotRetainMs or beyond the limit cold-park. The last-active
 // id is exempt from both so returning to it never pays a remount. Ties sort by
 // id so the selection is deterministic.
-function selectIdsBeyondHotRetain(
+export function selectIdsBeyondHotRetain(
   candidates: ColdParkRetainCandidate[],
   args: { nowMs: number; hotRetainMs: number; hotRetainLimit: number }
 ): Set<string> {
@@ -298,13 +300,15 @@ function nextColdParkDeadlineDelayMs(args: {
   nowMs: number
   coldParkDelayMs: number
   hotRetainMs: number
+  retentionTtlMs?: number
 }): number | null {
   if (!args.parkingEnabled || args.hiddenSinceMs === null) {
     return null
   }
   const pendingDeadlines = [
     args.hiddenSinceMs + args.coldParkDelayMs,
-    args.hiddenSinceMs + args.hotRetainMs
+    args.hiddenSinceMs + args.hotRetainMs,
+    ...(args.retentionTtlMs !== undefined ? [args.hiddenSinceMs + args.retentionTtlMs] : [])
   ].filter((deadlineMs) => deadlineMs > args.nowMs)
   return pendingDeadlines.length === 0 ? null : Math.min(...pendingDeadlines) - args.nowMs
 }
@@ -315,13 +319,16 @@ export function getTerminalWorktreeColdParkRecheckDelayMs(args: {
   nowMs: number
   coldParkDelayMs?: number
   hotRetainMs?: number
+  /** Provided only for retention-budget candidates so their TTL wakes the verdict effect. */
+  retentionTtlMs?: number
 }): number | null {
   return nextColdParkDeadlineDelayMs({
     parkingEnabled: args.parkingEnabled,
     hiddenSinceMs: args.hiddenSinceMs,
     nowMs: args.nowMs,
     coldParkDelayMs: args.coldParkDelayMs ?? TERMINAL_WORKTREE_COLD_PARK_DELAY_MS,
-    hotRetainMs: args.hotRetainMs ?? TERMINAL_WORKTREE_HOT_RETAIN_MS
+    hotRetainMs: args.hotRetainMs ?? TERMINAL_WORKTREE_HOT_RETAIN_MS,
+    ...(args.retentionTtlMs !== undefined ? { retentionTtlMs: args.retentionTtlMs } : {})
   })
 }
 

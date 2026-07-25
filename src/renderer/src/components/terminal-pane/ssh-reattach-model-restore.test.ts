@@ -39,11 +39,25 @@ describe('decideSshReattachPaintSource', () => {
       null,
       { data: 'screen', source: 'renderer' as const },
       { data: 'screen' },
-      { data: '', source: 'headless' as const }
+      { data: '', source: 'headless' as const },
+      { data: '', scrollbackAnsi: '', pendingEscapeTailAnsi: '', source: 'headless' as const }
     ]) {
       expect(
         decideSshReattachPaintSource({ ptyId: SSH_PTY_ID, sshParkingEnabled: true, snapshot })
       ).toBe('relay-replay')
+    }
+  })
+
+  it('judges emptiness on the composed payload, not the screen frame alone', () => {
+    // Why: an alt-screen model snapshot can hold all content in scrollbackAnsi
+    // with an empty screen; a dangling escape tail alone must also paint.
+    for (const snapshot of [
+      { data: '', scrollbackAnsi: 'history', source: 'headless' as const },
+      { data: '', pendingEscapeTailAnsi: '\x1b[', source: 'headless' as const }
+    ]) {
+      expect(
+        decideSshReattachPaintSource({ ptyId: SSH_PTY_ID, sshParkingEnabled: true, snapshot })
+      ).toBe('main-model-snapshot')
     }
   })
 

@@ -7382,7 +7382,6 @@ export function connectPanePty(
       // Why: mobile streaming needs xterm's exact screen state; install the serializer + lastTitle source for main-process hydration parity.
       registerPaneSerializerFor(ptyId)
 
-      let reattachPayloadApplied = !hasStructuralReplay
       // Why (C1 SSH parking): main's headless model holds ~5k rows for SSH ptys
       // while the relay replay is a 100KiB raw-byte tail; prefer the model on
       // reveal. Only a non-empty 'headless'-sourced snapshot qualifies — the
@@ -7409,6 +7408,18 @@ export function connectPanePty(
         }
         return snapshot
       }
+      // Why: a relay restart empties the replay buffer, but main's model may
+      // still hold the session — an SSH reattach probes it even with no replay
+      // so the reveal is never blank when main has content. Prefetched (before
+      // the payload task) so the coordinator route covers the paint.
+      let prefetchedSshModelSnapshot: PtyBufferSnapshot | null = null
+      if (!hasStructuralReplay && connectResult?.isReattach) {
+        prefetchedSshModelSnapshot = await fetchSshMainModelReattachSnapshot()
+        if (!isCurrentReattachPayload()) {
+          return false
+        }
+      }
+      let reattachPayloadApplied = !hasStructuralReplay && prefetchedSshModelSnapshot === null
       const applyReattachPayload = async (): Promise<void> => {
         if (!isCurrentReattachPayload()) {
           return
@@ -7453,8 +7464,9 @@ export function connectPanePty(
               window.api.pty.ackColdRestore(ptyId)
             }
           }
-        } else if (connectResult?.replay) {
-          const modelSnapshot = await fetchSshMainModelReattachSnapshot()
+        } else if (connectResult?.replay || prefetchedSshModelSnapshot) {
+          const modelSnapshot =
+            prefetchedSshModelSnapshot ?? (await fetchSshMainModelReattachSnapshot())
           if (!isCurrentReattachPayload()) {
             return
           }
@@ -7491,10 +7503,10 @@ export function connectPanePty(
             setRestoredSnapshotBaseline(ptyId, modelSnapshot)
             recordRendererOrderedSeq(modelSnapshot)
             sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
-            if (connectResult.coldRestore && !isRemoteRuntimePtyId(ptyId)) {
+            if (connectResult?.coldRestore && !isRemoteRuntimePtyId(ptyId)) {
               window.api.pty.ackColdRestore(ptyId)
             }
-          } else {
+          } else if (connectResult?.replay) {
             rememberReattachPayloadAgentSignal(connectResult.replay, { fullScreenReplay: true })
             // Relay replay may overlap xterm's pre-disconnect content; clear first to avoid duplication.
             writeReplayData('\x1b[2J\x1b[3J\x1b[H')
@@ -7574,7 +7586,7 @@ export function connectPanePty(
             schedulePendingStartupCommandDelivery()
           }
         }
-        if (hasStructuralReplay) {
+        if (hasStructuralReplay || prefetchedSshModelSnapshot) {
           await waitForTerminalReplayWritesParsed(pane.terminal)
           if (!isCurrentReattachPayload()) {
             return
@@ -7628,7 +7640,7 @@ export function connectPanePty(
           window.api.pty.signal(reattachPtyId, 'SIGWINCH')
         }
       }
-      if (hasStructuralReplay) {
+      if (hasStructuralReplay || prefetchedSshModelSnapshot) {
         await structuralReplayCoordinator.run(applyReattachPayload, {
           shouldRestore: isCurrentReattachPayload,
           afterRestore: fitAfterReattachRestore

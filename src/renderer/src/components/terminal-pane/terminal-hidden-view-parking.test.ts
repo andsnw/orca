@@ -11,6 +11,7 @@ import {
   canParkTerminalWorktreeRenderers,
   getTerminalTabColdParkRecheckDelayMs,
   getTerminalWorktreeColdParkRecheckDelayMs,
+  isParkRestorableTerminalPty,
   isSnapshotBackedTerminalPty,
   selectColdParkedTerminalTabs,
   selectColdParkedTerminalWorktrees
@@ -46,6 +47,32 @@ describe('isSnapshotBackedTerminalPty', () => {
   })
 })
 
+describe('isParkRestorableTerminalPty', () => {
+  const worktreeId = 'repo::/worktree'
+  const sshPolicy = { sshParkingEnabled: true }
+
+  it('accepts every snapshot-backed pty regardless of policy', () => {
+    expect(isParkRestorableTerminalPty(`${worktreeId}@@session-1`, worktreeId)).toBe(true)
+    expect(isParkRestorableTerminalPty(`${worktreeId}@@session-1`, worktreeId, sshPolicy)).toBe(
+      true
+    )
+  })
+
+  it('accepts SSH ptys only when the SSH-parking policy is enabled', () => {
+    expect(isParkRestorableTerminalPty('ssh:ssh-1@@pty-1', worktreeId, sshPolicy)).toBe(true)
+    expect(isParkRestorableTerminalPty('ssh:ssh-1@@pty-1', worktreeId)).toBe(false)
+    expect(
+      isParkRestorableTerminalPty('ssh:ssh-1@@pty-1', worktreeId, { sshParkingEnabled: false })
+    ).toBe(false)
+  })
+
+  it('rejects remote-runtime, fail-open, foreign, and null ptys under every policy', () => {
+    for (const ptyId of ['remote:env-1@@terminal-1', 'pty-local-detached', 'other@@s-1', null]) {
+      expect(isParkRestorableTerminalPty(ptyId, worktreeId, sshPolicy)).toBe(false)
+    }
+  })
+})
+
 describe('canParkTerminalWorktreeRenderers', () => {
   const hiddenSinceMs = 1_000
   const nowMs = hiddenSinceMs + TERMINAL_WORKTREE_PARK_DELAY_MS
@@ -63,6 +90,24 @@ describe('canParkTerminalWorktreeRenderers', () => {
 
   it('parks hidden local terminal renderers after the idle delay', () => {
     expect(canParkTerminalWorktreeRenderers(base)).toBe(true)
+  })
+
+  it('parks a hidden SSH worktree only under the SSH restore policy', () => {
+    const sshArgs = {
+      ...base,
+      terminalTabs: [{ id: 'tab-1', ptyId: 'ssh:conn-1@@pty-1' }]
+    }
+    expect(canParkTerminalWorktreeRenderers(sshArgs)).toBe(false)
+    expect(
+      canParkTerminalWorktreeRenderers({ ...sshArgs, restorePolicy: { sshParkingEnabled: true } })
+    ).toBe(true)
+    expect(
+      canParkTerminalWorktreeRenderers({
+        ...sshArgs,
+        terminalTabs: [...sshArgs.terminalTabs, { id: 'tab-2', ptyId: 'remote:env-1@@t-1' }],
+        restorePolicy: { sshParkingEnabled: true }
+      })
+    ).toBe(false)
   })
 
   it('keeps a previously mounted v19 terminal eligible for ordinary parking', () => {

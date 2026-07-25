@@ -79,6 +79,7 @@ type MockStoreState = {
     }
   >
   runtimePaneTitlesByTabId: Record<string, Record<number, string>>
+  settings: { terminalSshViewParking?: boolean } | null
   clearTabLaunchAgent: ReturnType<typeof vi.fn>
   clearRuntimePaneTitle: ReturnType<typeof vi.fn>
   setTabLayout: ReturnType<typeof vi.fn>
@@ -135,6 +136,7 @@ describe('terminal-parked-tab-watchers', () => {
       tabsByWorktree: {},
       terminalLayoutsByTabId: {},
       runtimePaneTitlesByTabId: {},
+      settings: null,
       clearTabLaunchAgent: vi.fn(),
       clearRuntimePaneTitle: vi.fn(),
       setTabLayout: vi.fn(),
@@ -204,10 +206,9 @@ describe('terminal-parked-tab-watchers', () => {
     expect(startedWatchers[0].options).toMatchObject({ ptyId: SECOND_PTY_ID })
   })
 
-  it('never starts watchers for remote-runtime or SSH PTYs', () => {
+  it('never starts watchers for remote-runtime PTYs', () => {
     capturePanes([
-      { ptyId: 'remote:env-1@@terminal-1', paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
-      { ptyId: 'ssh:conn-1@@pty-1', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      { ptyId: 'remote:env-1@@terminal-1', paneId: 1, leafId: LEAF_ID, drivesTabTitle: true }
     ])
     syncParked({ tabs: [{ id: TAB_ID, ptyId: null }] })
 
@@ -215,6 +216,22 @@ describe('terminal-parked-tab-watchers', () => {
     // Why: the tab is still tracked as parked so debug introspection
     // (window.__terminalParkingDebug) reflects every parked tab.
     expect(getParkedTerminalWatcherTabIds()).toEqual([TAB_ID])
+  })
+
+  it('starts watchers for SSH PTYs (C1 SSH parking, default on)', () => {
+    capturePanes([{ ptyId: 'ssh:conn-1@@pty-1', paneId: 1, leafId: LEAF_ID, drivesTabTitle: true }])
+    syncParked({ tabs: [{ id: TAB_ID, ptyId: 'ssh:conn-1@@pty-1' }] })
+
+    expect(startParkedTerminalByteWatcher).toHaveBeenCalledTimes(1)
+    expect(startedWatchers[0].options).toMatchObject({ ptyId: 'ssh:conn-1@@pty-1' })
+  })
+
+  it('never starts watchers for SSH PTYs when terminalSshViewParking is off', () => {
+    mockStoreState.settings = { terminalSshViewParking: false }
+    capturePanes([{ ptyId: 'ssh:conn-1@@pty-1', paneId: 1, leafId: LEAF_ID, drivesTabTitle: true }])
+    syncParked({ tabs: [{ id: TAB_ID, ptyId: null }] })
+
+    expect(startParkedTerminalByteWatcher).not.toHaveBeenCalled()
   })
 
   it('keeps existing watchers across repeated syncs of the same parked state', () => {
@@ -702,6 +719,28 @@ describe('terminal-parked-tab-watchers', () => {
     })
 
     it('rejects a capture containing a PTY without snapshot backing', () => {
+      capturePanes([
+        { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        // Why foreign-worktree id: minted under another worktree, never restorable.
+        { ptyId: 'other::wt@@session-9', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      expect(canWatcherCoverParkedTerminalTab(WORKTREE_ID, { id: TAB_ID, ptyId: PTY_ID })).toBe(
+        false
+      )
+    })
+
+    it('accepts an SSH PTY under the default C1 SSH-parking policy', () => {
+      capturePanes([
+        { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        { ptyId: 'ssh:conn-1@@pty-1', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      expect(canWatcherCoverParkedTerminalTab(WORKTREE_ID, { id: TAB_ID, ptyId: PTY_ID })).toBe(
+        true
+      )
+    })
+
+    it('rejects an SSH PTY when terminalSshViewParking is off', () => {
+      mockStoreState.settings = { terminalSshViewParking: false }
       capturePanes([
         { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
         { ptyId: 'ssh:conn-1@@pty-1', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }

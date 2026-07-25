@@ -67,6 +67,26 @@ export function isSnapshotBackedTerminalPty(ptyId: string | null, worktreeId: st
   return separatorIdx !== -1 && ptyId.slice(0, separatorIdx) === worktreeId
 }
 
+export type TerminalParkRestorePolicy = {
+  /** settings.terminalSshViewParking !== false — the C1 SSH-parking kill switch. */
+  sshParkingEnabled?: boolean
+}
+
+// Why: SSH bytes transit local main, so main's headless model (served over
+// pty:getMainBufferSnapshot) can re-hydrate a parked SSH reveal, with the
+// relay's replay buffer as fallback — fact-mode watchers cover side effects
+// either way. Remote-runtime ptys never transit main; they stay un-parkable.
+export function isParkRestorableTerminalPty(
+  ptyId: string | null,
+  worktreeId: string,
+  policy?: TerminalParkRestorePolicy
+): boolean {
+  if (isSnapshotBackedTerminalPty(ptyId, worktreeId)) {
+    return true
+  }
+  return policy?.sshParkingEnabled === true && ptyId !== null && parseAppSshPtyId(ptyId) !== null
+}
+
 export function canParkTerminalWorktreeRenderers(args: {
   worktreeId: string
   terminalTabs: readonly ColdParkableTerminalTab[]
@@ -80,6 +100,7 @@ export function canParkTerminalWorktreeRenderers(args: {
   hiddenSinceMs: number | null
   nowMs: number
   coldParkDelayMs?: number
+  restorePolicy?: TerminalParkRestorePolicy
 }): boolean {
   if (
     !args.parkingEnabled ||
@@ -103,7 +124,7 @@ export function canParkTerminalWorktreeRenderers(args: {
     if (getPendingActivationSpawnCount(tab.pendingActivationSpawn) > 0) {
       return false
     }
-    return isSnapshotBackedTerminalPty(tab.ptyId, args.worktreeId)
+    return isParkRestorableTerminalPty(tab.ptyId, args.worktreeId, args.restorePolicy)
   })
 }
 
@@ -114,6 +135,7 @@ export function canParkTerminalTabRenderer(args: {
   parkingEnabled: boolean
   nowMs: number
   coldParkDelayMs?: number
+  restorePolicy?: TerminalParkRestorePolicy
 }): boolean {
   const tab = args.terminalTab
   if (
@@ -133,7 +155,7 @@ export function canParkTerminalTabRenderer(args: {
   if (getPendingActivationSpawnCount(tab.pendingActivationSpawn) > 0) {
     return false
   }
-  return isSnapshotBackedTerminalPty(tab.ptyId, args.worktreeId)
+  return isParkRestorableTerminalPty(tab.ptyId, args.worktreeId, args.restorePolicy)
 }
 
 type ColdParkRetainCandidate = { id: string; hiddenSinceMs: number }
@@ -197,6 +219,7 @@ export function selectColdParkedTerminalWorktrees(
     pendingStartupByTabId: Readonly<Record<string, unknown>>
     parkingEnabled: boolean
     nowMs: number
+    restorePolicy?: TerminalParkRestorePolicy
   } & TerminalColdParkPolicyOverrides
 ): Set<string> {
   if (!args.parkingEnabled) {
@@ -212,7 +235,8 @@ export function selectColdParkedTerminalWorktrees(
         pendingStartupByTabId: args.pendingStartupByTabId,
         parkingEnabled: args.parkingEnabled,
         nowMs: args.nowMs,
-        coldParkDelayMs
+        coldParkDelayMs,
+        ...(args.restorePolicy ? { restorePolicy: args.restorePolicy } : {})
       })
     ) {
       continue
@@ -233,6 +257,7 @@ export function selectColdParkedTerminalTabs(
     pendingStartupByTabId: Readonly<Record<string, unknown>>
     parkingEnabled: boolean
     nowMs: number
+    restorePolicy?: TerminalParkRestorePolicy
   } & TerminalColdParkPolicyOverrides
 ): Set<string> {
   if (!args.parkingEnabled) {
@@ -249,7 +274,8 @@ export function selectColdParkedTerminalTabs(
         pendingStartupByTabId: args.pendingStartupByTabId,
         parkingEnabled: args.parkingEnabled,
         nowMs: args.nowMs,
-        coldParkDelayMs
+        coldParkDelayMs,
+        ...(args.restorePolicy ? { restorePolicy: args.restorePolicy } : {})
       })
     ) {
       continue

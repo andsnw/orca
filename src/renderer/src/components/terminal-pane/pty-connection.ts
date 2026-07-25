@@ -238,6 +238,10 @@ import {
 } from './hidden-output-restore-scheduler'
 import { resolveHiddenRestoreScrollbackRows } from './terminal-hidden-restore-scrollback'
 import {
+  decideSshReattachPaintSource,
+  shouldFetchSshReattachModelSnapshot
+} from './ssh-reattach-model-restore'
+import {
   getExecutionHostIdForWorktree,
   getSettingsForWorktreeRuntimeOwner
 } from '@/lib/worktree-runtime-owner'
@@ -7379,6 +7383,37 @@ export function connectPanePty(
       registerPaneSerializerFor(ptyId)
 
       let reattachPayloadApplied = !hasStructuralReplay
+      // Why (C1 SSH parking): main's headless model holds ~5k rows for SSH ptys
+      // while the relay replay is a 100KiB raw-byte tail; prefer the model on
+      // reveal. Only a non-empty 'headless'-sourced snapshot qualifies — the
+      // renderer-serializer fallback has no mounted xterm after a park.
+      const tryApplySshMainModelReattachSnapshot = async (): Promise<boolean> => {
+        const sshParkingEnabled = useAppStore.getState().settings?.terminalSshViewParking !== false
+        if (!shouldFetchSshReattachModelSnapshot({ ptyId, sshParkingEnabled })) {
+          return false
+        }
+        const snapshot = await window.api.pty
+          .getMainBufferSnapshot(ptyId, {
+            scrollbackRows: resolveHiddenRestoreScrollbackRows(pane.terminal.options.scrollback)
+          })
+          .catch(() => null)
+        if (!isCurrentReattachPayload()) {
+          // Why: a superseded attempt must not paint, but reporting true would skip the replay fallback of the live attempt.
+          return true
+        }
+        if (
+          !snapshot ||
+          decideSshReattachPaintSource({ ptyId, sshParkingEnabled, snapshot }) !==
+            'main-model-snapshot'
+        ) {
+          return false
+        }
+        rememberReattachPayloadAgentSignal(snapshot.data, { fullScreenReplay: true })
+        kittyKeyboardModes.scanReplay(snapshot.data)
+        await applyMainBufferSnapshot(snapshot)
+        sendFocusedReattachFocusInAfterReplay(ptyId, attemptGeneration)
+        return true
+      }
       const applyReattachPayload = async (): Promise<void> => {
         if (!isCurrentReattachPayload()) {
           return
@@ -7424,6 +7459,15 @@ export function connectPanePty(
             }
           }
         } else if (connectResult?.replay) {
+          if (await tryApplySshMainModelReattachSnapshot()) {
+            if (connectResult.coldRestore && !isRemoteRuntimePtyId(ptyId)) {
+              window.api.pty.ackColdRestore(ptyId)
+            }
+            return
+          }
+          if (!isCurrentReattachPayload()) {
+            return
+          }
           rememberReattachPayloadAgentSignal(connectResult.replay, { fullScreenReplay: true })
           // Relay replay may overlap xterm's pre-disconnect content; clear first to avoid duplication.
           writeReplayData('\x1b[2J\x1b[3J\x1b[H')

@@ -78,6 +78,9 @@ export function useTerminalTabColdParking(args: {
   const terminalParkingEnabled = useAppStore(
     (state) => state.settings?.terminalHiddenViewParking !== false
   )
+  const terminalSshParkingEnabled = useAppStore(
+    (state) => state.settings?.terminalSshViewParking !== false
+  )
   const terminalTabHiddenSinceRef = useRef(new Map<string, number>())
   const terminalTabParkingTimersRef = useRef(new Map<string, number>())
   const parkVerdictRecordsRef = useRef(new Map<string, ParkVerdictFlipRecord>())
@@ -147,6 +150,7 @@ export function useTerminalTabColdParking(args: {
       pendingStartupByTabId,
       parkingEnabled: terminalParkingEnabled,
       nowMs,
+      restorePolicy: { sshParkingEnabled: terminalSshParkingEnabled },
       ...overrides
     })
     // Why: a tab the byte watchers cannot cover (no capture, no layout
@@ -196,6 +200,7 @@ export function useTerminalTabColdParking(args: {
     pendingStartupByTabId,
     shouldMeasureHiddenWorktree,
     terminalParkingEnabled,
+    terminalSshParkingEnabled,
     terminalTabParkingRevision,
     terminalTabs,
     worktreeId

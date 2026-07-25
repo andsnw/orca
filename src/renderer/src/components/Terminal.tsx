@@ -268,6 +268,7 @@ function Terminal(): React.JSX.Element | null {
   const tabsByWorktree = useAppStore((s) => s.tabsByWorktree)
   const pendingStartupByTabId = useAppStore((s) => s.pendingStartupByTabId)
   const terminalParkingEnabled = useAppStore((s) => s.settings?.terminalHiddenViewParking !== false)
+  const terminalSshParkingEnabled = useAppStore((s) => s.settings?.terminalSshViewParking !== false)
   const terminalTitleSnapshotAuthorityEnabled = useAppStore((s) =>
     isMainTerminalSideEffectAuthorityForPty({
       settings: s.settings,
@@ -870,6 +871,7 @@ function Terminal(): React.JSX.Element | null {
       pendingStartupByTabId,
       parkingEnabled: terminalParkingEnabled,
       nowMs,
+      restorePolicy: { sshParkingEnabled: terminalSshParkingEnabled },
       ...overrides
     })
     // Why: a worktree with any watcher-uncoverable tab must never park, or it goes silent for bells/titles/completions (sank the first parking attempt).
@@ -918,6 +920,7 @@ function Terminal(): React.JSX.Element | null {
     tabsByWorktree,
     terminalParkingEnabled,
     terminalParkingRevision,
+    terminalSshParkingEnabled,
     workspaceSurfaces
   ])
   // Why: gate on workspaceSessionReady so TerminalPane doesn't mount and spawn a duplicate PTY before reconnectPersistedTerminals() finishes.

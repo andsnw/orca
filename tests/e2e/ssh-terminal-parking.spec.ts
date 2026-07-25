@@ -49,20 +49,34 @@ test.describe('SSH terminal hidden view parking', () => {
       const snapshot = await waitForPaneIdentitySnapshot(orcaPage, 1)
       expect(snapshot.panes[0]?.ptyId).toBe(sshPtyId)
 
-      // Why numbered lines: the reveal assertion checks BOTH the final marker
-      // (screen) and an early line (scrollback depth beyond one viewport).
+      // Why the ':' terminator: `${marker}_1:` must not substring-match _10/_100.
       const marker = `SSH_PARK_MARKER_${Date.now()}`
       await sendToTerminal(
         orcaPage,
         sshPtyId,
-        `for i in $(seq 1 200); do echo "${marker}_$i"; done\r`
+        `for i in $(seq 1 200); do echo "${marker}_$i:"; done\r`
       )
       await expect
         .poll(() => getTerminalContent(orcaPage, 20_000), {
           timeout: 30_000,
           message: 'SSH marker output did not render before parking'
         })
-        .toContain(`${marker}_200`)
+        .toContain(`${marker}_200:`)
+      // Why the pad: ~3000 × ~60B ≈ 180KB pushes the early markers past the
+      // relay's 100KiB rolling replay buffer while staying inside main's
+      // ~5k-row headless model — so a revealed `${marker}_1:` can only have
+      // come from the model paint, never the relay fallback.
+      await sendToTerminal(
+        orcaPage,
+        sshPtyId,
+        `for i in $(seq 1 3000); do echo "PAD_$i:0123456789012345678901234567890123456789"; done; echo "${marker}_PAD_DONE:"\r`
+      )
+      await expect
+        .poll(() => getTerminalContent(orcaPage, 20_000), {
+          timeout: 60_000,
+          message: 'SSH pad output did not finish before parking'
+        })
+        .toContain(`${marker}_PAD_DONE:`)
 
       await parkHiddenTabBehindDecoy(orcaPage, remote.worktreeId, sshTabId, {
         parkDelayMs: PARKING_DELAY_MS
@@ -79,18 +93,18 @@ test.describe('SSH terminal hidden view parking', () => {
       await expect
         .poll(() => getTerminalContent(orcaPage, 20_000), {
           timeout: 60_000,
-          message: 'revealed SSH tab did not restore the final marker line'
+          message: 'revealed SSH tab did not restore the final pad line'
         })
-        .toContain(`${marker}_200`)
-      // Why _150 not _1: the relay-replay fallback is a 100KiB tail, so the
-      // earliest lines are only guaranteed under the main-model paint; a mid
-      // marker asserts multi-viewport depth without coupling to either source.
+        .toContain(`${marker}_PAD_DONE:`)
+      // Depth proof: `${marker}_1:` predates >100KiB of later output, so its
+      // presence after reveal proves the headless-model paint restored
+      // scrollback the relay replay cannot hold.
       await expect
-        .poll(() => getTerminalContent(orcaPage, 40_000), {
+        .poll(() => getTerminalContent(orcaPage, 2_000_000), {
           timeout: 15_000,
-          message: 'revealed SSH tab lost scrollback beyond the visible screen'
+          message: 'revealed SSH tab lost the pre-pad scrollback only the model paint restores'
         })
-        .toContain(`${marker}_150`)
+        .toContain(`${marker}_1:`)
     } finally {
       cleanupDockerSshRelayTarget(target)
     }

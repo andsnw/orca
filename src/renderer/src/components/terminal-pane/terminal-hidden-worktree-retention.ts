@@ -1,6 +1,5 @@
 import { isRemoteRuntimePtyId } from '@/runtime/runtime-terminal-inspection'
 import { parseAppSshPtyId } from '../../../../shared/ssh-pty-id'
-import type { TerminalTab } from '../../../../shared/types'
 import {
   TERMINAL_WORKTREE_COLD_PARK_DELAY_MS,
   isSnapshotBackedTerminalPty,
@@ -18,16 +17,17 @@ import {
 export const TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT = 12
 export const TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS = 45 * 60_000
 
-// Why: an eviction-exempt tab holds a live local pty a remount could not
-// reattach (daemon-fail-open separator-less ids, ptys minted under another
-// worktree) — a fresh spawn would orphan the live shell. The TAB keeps its
-// mounted pane when its worktree force-parks (per-tab exclusion, mirroring
-// Activity portals) and relies on scrollback demotion instead.
-export function isEvictionExemptTerminalTab(
-  tab: Pick<TerminalTab, 'ptyId'>,
+// Why: an eviction-exempt pty is a live local one a remount could not reattach
+// (daemon-fail-open separator-less ids, ptys minted under another worktree) — a
+// fresh spawn would orphan the live shell. Its TAB keeps its mounted pane when
+// the worktree force-parks (per-tab exclusion, mirroring Activity portals) and
+// relies on scrollback demotion instead. Per-PTY, not per-tab: the coverage
+// veto that makes a worktree a retention candidate walks every split pane, so
+// the exemption must too (see isEvictionExemptTerminalTab).
+export function isEvictionExemptTerminalPty(
+  ptyId: string | null | undefined,
   worktreeId: string
 ): boolean {
-  const ptyId = tab.ptyId
   if (!ptyId || isRemoteRuntimePtyId(ptyId) || parseAppSshPtyId(ptyId)) {
     return false
   }

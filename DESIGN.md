@@ -136,10 +136,16 @@ only new state is the verdict itself.
   hidden un-parkable worktree never force-parks — one warm slot is the
   deliberate floor (slice C bounds it instead, §2.3).
 - **Eviction exemption is per-TAB, not per-worktree.** An eviction-exempt
-  tab (`isEvictionExemptTerminalTab`: a live local pty a remount could not
-  reattach — daemon-fail-open separator-less ids AND ptys minted under
-  another worktreeId; null/SSH/remote ids are not exempt) no longer vetoes
-  its worktree. The worktree force-parks while exempt tabs keep their
+  tab (`isEvictionExemptTerminalTab`: ANY of its pane ptys is a live local
+  one a remount could not reattach — daemon-fail-open separator-less ids AND
+  ptys minted under another worktreeId; null/SSH/remote ids are not exempt)
+  no longer vetoes its worktree. The exemption resolves panes through the
+  same `resolveParkedTerminalPaneCandidates` the coverage veto uses, so the
+  two agree on split tabs: reading only `tab.ptyId` (the FIRST leaf's pty)
+  would let a split tab whose second leaf holds the unrestorable pty fail
+  coverage — making its worktree a retention candidate — while looking
+  exempt-free, and force-park would orphan that live shell.
+  The worktree force-parks while exempt tabs keep their
   mounted panes via a per-tab exclusion mirroring the Activity-portal
   pattern (legacy watcher sync + render in `Terminal.tsx`, and
   `useTerminalTabColdParking` via the `isForceParked` prop). Exempt panes
@@ -147,10 +153,13 @@ only new state is the verdict itself.
   coverage where the transport exists. Ordinary parking eligibility is
   untouched: a worktree with an exempt tab still cannot ordinary-park,
   because eligibility requires every tab restorable.
-- Best-effort capture at force-park: the existing 512 KB
-  `shutdownBufferCaptures` serialization runs once per force-park episode
-  before the unmount render, so snapshot-less classes still reveal
-  last-known content cold-restore-style.
+- Best-effort capture at force-park: the existing `shutdownBufferCaptures`
+  serialization runs once per force-park episode before the unmount render,
+  so snapshot-less classes still reveal last-known content
+  cold-restore-style. It passes `includeLocalBuffers: false` like every other
+  caller, so only relay/remote-host worktrees (no other scrollback source)
+  keep bytes — a heap fix must not plant 512 KB/pane of retained strings for
+  local worktrees that already have the daemon snapshot.
 - Damping: the verdict follows every existing convention — computed in the
   worktree-parking effect, excluded from its own deps, set-equality guards
   returning the previous reference, strictly-positive recheck timers (the
@@ -182,7 +191,13 @@ Demotion applies through each mounted pane's lifecycle hook
 (`useTerminalWorktreeScrollbackDemoted` →
 `applyTerminalScrollbackRowsToMountedPanes`) — an xterm option update only,
 no remount/replay/refit/SIGWINCH. Trimmed history is gone by design; reveal
-restores the configured cap for future output. Measured reclaim at 50k-row
+restores the configured cap for future output. The verdict registry is
+module state, so `Terminal.tsx`'s unmount cleanup calls
+`resetTerminalScrollbackDemotion()` beside `disposeAllParkedTerminalWatchers()`
+— nothing would recompute a stale verdict, and React runs a pane's scrollback
+effect BEFORE the host effect that would clear it, so a pane remounting
+against a stale demotion would have its restore replay trimmed to 1 000 rows
+unrecoverably. Measured reclaim at 50k-row
 settings: 19.4 → 1.3 MB V8 heap and 114.7 → 2.7 MB ArrayBuffers per pane.
 Membership is time-monotone for fixed inputs (unit-tested): the force-parked
 and past-TTL sets only grow with time and the last-active pick is

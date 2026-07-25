@@ -18,6 +18,7 @@ import {
   isParkRestorableTerminalPty,
   type TerminalParkRestorePolicy
 } from './terminal-hidden-view-parking'
+import { isEvictionExemptTerminalPty } from './terminal-hidden-worktree-retention'
 import {
   resolveTabTitleAfterPaneClose,
   shouldClearLaunchAgentForClosedPane
@@ -94,6 +95,27 @@ function parkRestorePolicyFromState(state: {
   settings: { terminalSshViewParking?: boolean } | null
 }): TerminalParkRestorePolicy {
   return { sshParkingEnabled: state.settings?.terminalSshViewParking !== false }
+}
+
+/**
+ * Whether force-park must keep this tab's panes mounted: ANY of its pane PTYs is
+ * one a remount could not reattach. Resolved from the same pane candidates as
+ * canWatcherCoverParkedTerminalTab — tab.ptyId is only the first leaf's PTY, so
+ * a split tab whose SECOND leaf holds the unrestorable PTY fails coverage (and
+ * so becomes a retention candidate) yet would otherwise look exempt-free and
+ * unmount, orphaning that live shell. tab.ptyId stays in the union in case pane
+ * resolution misses it (no layout, no capture).
+ */
+export function isEvictionExemptTerminalTab(
+  tab: ParkableTerminalTabModel,
+  worktreeId: string
+): boolean {
+  if (isEvictionExemptTerminalPty(tab.ptyId, worktreeId)) {
+    return true
+  }
+  return resolveParkedTerminalPaneCandidates(tab, useAppStore.getState()).some((pane) =>
+    isEvictionExemptTerminalPty(pane.ptyId, worktreeId)
+  )
 }
 
 /**

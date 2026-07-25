@@ -2,27 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { TERMINAL_WORKTREE_PARK_DELAY_MS } from './terminal-hidden-view-parking'
 import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
-  isEvictionExemptTerminalTab,
+  isEvictionExemptTerminalPty,
   selectRetentionForceParkedTerminalWorktrees,
   selectScrollbackDemotedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-hidden-worktree-retention'
 
-describe('isEvictionExemptTerminalTab', () => {
+describe('isEvictionExemptTerminalPty', () => {
   const worktreeId = 'repo::/worktree'
 
   it('exempts only live local ptys a remount could not reattach', () => {
-    expect(isEvictionExemptTerminalTab({ ptyId: 'pty-local-detached' }, worktreeId)).toBe(true)
-    expect(isEvictionExemptTerminalTab({ ptyId: 'other::wt@@session-1' }, worktreeId)).toBe(true)
+    expect(isEvictionExemptTerminalPty('pty-local-detached', worktreeId)).toBe(true)
+    expect(isEvictionExemptTerminalPty('other::wt@@session-1', worktreeId)).toBe(true)
   })
 
-  it('never exempts snapshot-backed, SSH, remote-runtime, or unbound tabs', () => {
-    expect(isEvictionExemptTerminalTab({ ptyId: `${worktreeId}@@session-1` }, worktreeId)).toBe(
-      false
-    )
-    expect(isEvictionExemptTerminalTab({ ptyId: 'ssh:conn-1@@pty-1' }, worktreeId)).toBe(false)
-    expect(isEvictionExemptTerminalTab({ ptyId: 'remote:env-1@@t-1' }, worktreeId)).toBe(false)
-    expect(isEvictionExemptTerminalTab({ ptyId: null }, worktreeId)).toBe(false)
+  it('never exempts snapshot-backed, SSH, remote-runtime, or unbound ptys', () => {
+    expect(isEvictionExemptTerminalPty(`${worktreeId}@@session-1`, worktreeId)).toBe(false)
+    expect(isEvictionExemptTerminalPty('ssh:conn-1@@pty-1', worktreeId)).toBe(false)
+    expect(isEvictionExemptTerminalPty('remote:env-1@@t-1', worktreeId)).toBe(false)
+    expect(isEvictionExemptTerminalPty(null, worktreeId)).toBe(false)
   })
 })
 

@@ -28,6 +28,16 @@ export function setScrollbackDemotedTerminalWorktrees(next: ReadonlySet<string>)
   }
 }
 
+/**
+ * Clear every verdict — the demotion host is gone, so nothing recomputes them.
+ * Without this a pane remounting later reads a stale demotion (React runs the
+ * pane's scrollback effect BEFORE the host effect that would clear it) and
+ * xterm trims its restore replay to 1 000 rows, unrecoverably.
+ */
+export function resetTerminalScrollbackDemotion(): void {
+  setScrollbackDemotedTerminalWorktrees(new Set())
+}
+
 export function isTerminalWorktreeScrollbackDemoted(worktreeId: string): boolean {
   return demotedWorktreeIds.has(worktreeId)
 }

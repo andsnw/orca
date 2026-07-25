@@ -99,6 +99,7 @@ import {
   disposeParkedTerminalWatchersForWorktree,
   fallbackParkedPaneCandidates,
   getParkedTerminalWatcherTabIds,
+  isEvictionExemptTerminalTab,
   pruneParkedTerminalWatchers,
   shouldDeferParkedPtyExitTabClose,
   syncParkedTerminalTabWatchers
@@ -778,6 +779,58 @@ describe('terminal-parked-tab-watchers', () => {
       expect(canWatcherCoverParkedTerminalTab(WORKTREE_ID, { id: TAB_ID, ptyId: PTY_ID })).toBe(
         false
       )
+    })
+  })
+
+  describe('isEvictionExemptTerminalTab', () => {
+    // Why these pair with coverage: the same split tab that fails coverage (so
+    // force-park targets its worktree) must be exempt, or force-park unmounts
+    // the very live pty the exemption exists to protect.
+    it('exempts a split tab whose SECOND pane holds the unrestorable pty', () => {
+      capturePanes([
+        { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        { ptyId: 'other::wt@@session-9', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      const tab = { id: TAB_ID, ptyId: PTY_ID }
+      expect(canWatcherCoverParkedTerminalTab(WORKTREE_ID, tab)).toBe(false)
+      expect(isEvictionExemptTerminalTab(tab, WORKTREE_ID)).toBe(true)
+    })
+
+    it('exempts a split tab whose second leaf pty comes from the layout fallback', () => {
+      mockStoreState.terminalLayoutsByTabId[TAB_ID] = {
+        root: {
+          type: 'split',
+          direction: 'row',
+          first: { type: 'leaf', leafId: LEAF_ID },
+          second: { type: 'leaf', leafId: SECOND_LEAF_ID }
+        },
+        activeLeafId: LEAF_ID,
+        expandedLeafId: null,
+        ptyIdsByLeafId: { [LEAF_ID]: PTY_ID, [SECOND_LEAF_ID]: 'pty-local-detached' }
+      }
+      expect(isEvictionExemptTerminalTab({ id: TAB_ID, ptyId: PTY_ID }, WORKTREE_ID)).toBe(true)
+    })
+
+    it('does not exempt a split tab whose panes are all snapshot-backed', () => {
+      capturePanes([
+        { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        { ptyId: SECOND_PTY_ID, paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      expect(isEvictionExemptTerminalTab({ id: TAB_ID, ptyId: PTY_ID }, WORKTREE_ID)).toBe(false)
+    })
+
+    it('exempts on tab.ptyId alone when no panes resolve', () => {
+      expect(
+        isEvictionExemptTerminalTab({ id: TAB_ID, ptyId: 'pty-local-detached' }, WORKTREE_ID)
+      ).toBe(true)
+    })
+
+    it('never exempts remote-runtime or SSH panes', () => {
+      capturePanes([
+        { ptyId: 'remote:env-1@@t-1', paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        { ptyId: 'ssh:conn-1@@pty-1', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      expect(isEvictionExemptTerminalTab({ id: TAB_ID, ptyId: null }, WORKTREE_ID)).toBe(false)
     })
   })
 })

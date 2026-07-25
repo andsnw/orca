@@ -22,11 +22,11 @@ import {
   recordParkVerdictFlips,
   type ParkVerdictFlipRecord
 } from './terminal-park-verdict-flip-telemetry'
-import { isEvictionExemptTerminalTab } from './terminal-hidden-worktree-retention'
 import { getTerminalParkingPolicyOverrides } from './terminal-parking-e2e-overrides'
 import {
   canWatcherCoverParkedTerminalTab,
   disposeParkedTerminalWatchersForWorktree,
+  isEvictionExemptTerminalTab,
   syncParkedTerminalTabWatchers
 } from './terminal-parked-tab-watchers'
 

@@ -36,7 +36,13 @@ import {
 import { isIntentionalAppRestartInProgress } from '@/lib/updater-beforeunload'
 import { preventUnloadAndScheduleShutdownCheckpointReset } from '@/lib/shutdown-checkpoint-guard'
 import EditorAutosaveController from './editor/EditorAutosaveController'
-import type { Tab, TabContentType, TabGroupLayoutNode, TuiAgent } from '../../../shared/types'
+import type {
+  Tab,
+  TabContentType,
+  TabGroupLayoutNode,
+  TerminalTab,
+  TuiAgent
+} from '../../../shared/types'
 import { hasFeatureInteraction } from '../../../shared/feature-interactions'
 import BrowserPane from './browser-pane/BrowserPane'
 import BrowserPaneOverlayLayer from './browser-pane/BrowserPaneOverlayLayer'
@@ -86,18 +92,21 @@ import {
 } from './terminal-pane/terminal-hidden-view-parking'
 import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
-  isEvictionExemptTerminalTab,
   selectRetentionForceParkedTerminalWorktrees,
   selectScrollbackDemotedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-pane/terminal-hidden-worktree-retention'
-import { setScrollbackDemotedTerminalWorktrees } from './terminal-pane/terminal-hidden-scrollback-demotion'
+import {
+  resetTerminalScrollbackDemotion,
+  setScrollbackDemotedTerminalWorktrees
+} from './terminal-pane/terminal-hidden-scrollback-demotion'
 import { shutdownBufferCaptures } from './terminal-pane/shutdown-buffer-captures'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
 import {
   canWatcherCoverParkedTerminalTab,
   disposeAllParkedTerminalWatchers,
+  isEvictionExemptTerminalTab,
   pruneParkedTerminalWatchers,
   shouldDeferParkedPtyExitTabClose,
   syncParkedTerminalTabWatchers
@@ -905,10 +914,23 @@ function Terminal(): React.JSX.Element | null {
       restorePolicy: { sshParkingEnabled: terminalSshParkingEnabled },
       ...overrides
     })
+    // Why memoized: the retention pass below re-asks coverage for EVERY mounted
+    // worktree's tabs, not just the parked few — each call re-reads the store and
+    // can walk the layout tree, so cache per tab for this pass.
+    const watcherCoverageByTabId = new Map<string, boolean>()
+    const worktreeTabsAreWatcherCovered = (worktreeId: string, tabs: TerminalTab[]): boolean =>
+      tabs.every((tab) => {
+        const cached = watcherCoverageByTabId.get(tab.id)
+        if (cached !== undefined) {
+          return cached
+        }
+        const covered = canWatcherCoverParkedTerminalTab(worktreeId, tab)
+        watcherCoverageByTabId.set(tab.id, covered)
+        return covered
+      })
     // Why: a worktree with any watcher-uncoverable tab must never park, or it goes silent for bells/titles/completions (sank the first parking attempt).
     for (const worktreeId of Array.from(nextParkedTerminalWorktreeIds)) {
-      const tabs = tabsByWorktree[worktreeId] ?? []
-      if (!tabs.every((tab) => canWatcherCoverParkedTerminalTab(worktreeId, tab))) {
+      if (!worktreeTabsAreWatcherCovered(worktreeId, tabsByWorktree[worktreeId] ?? [])) {
         nextParkedTerminalWorktreeIds.delete(worktreeId)
       }
     }
@@ -937,8 +959,7 @@ function Terminal(): React.JSX.Element | null {
           shouldMeasureHiddenWorktree: candidate.shouldMeasureHiddenWorktree,
           hasActivityTerminalPortal: candidate.hasActivityTerminalPortal,
           ordinaryParkingCovers:
-            parkEligible &&
-            tabs.every((tab) => canWatcherCoverParkedTerminalTab(candidate.worktreeId, tab)),
+            parkEligible && worktreeTabsAreWatcherCovered(candidate.worktreeId, tabs),
           hasEvictionExemptTab: tabs.some((tab) =>
             isEvictionExemptTerminalTab(tab, candidate.worktreeId)
           ),
@@ -967,9 +988,13 @@ function Terminal(): React.JSX.Element | null {
     for (const worktreeId of forceParkedWorktreeIds) {
       if (!capturedForceParked.has(worktreeId)) {
         capturedForceParked.add(worktreeId)
-        // Why: serialize buffers while the panes still exist (same registry sleep uses), so classes with no snapshot source still reveal last-known content.
+        // Why: serialize buffers while the panes still exist (same registry sleep
+        // uses), so classes with no snapshot source still reveal last-known
+        // content. includeLocalBuffers:false is required here, not optional — a
+        // heap fix must not plant 512KB/pane of scrollback strings in the store
+        // for local worktrees that already have the daemon snapshot.
         for (const tab of tabsByWorktree[worktreeId] ?? []) {
-          shutdownBufferCaptures.get(tab.id)?.()
+          shutdownBufferCaptures.get(tab.id)?.({ includeLocalBuffers: false })
         }
       }
       nextParkedTerminalWorktreeIds.add(worktreeId)
@@ -1280,8 +1305,14 @@ function Terminal(): React.JSX.Element | null {
     workspaceSessionReady,
     workspaceSurfaces
   ])
-  // Why: on host unmount no reconciliation effect runs again, so dispose every remaining parked watcher here.
-  useEffect(() => () => disposeAllParkedTerminalWatchers(), [])
+  // Why: on host unmount no reconciliation effect runs again, so dispose every remaining parked watcher and drop the demotion verdicts nothing would recompute.
+  useEffect(
+    () => () => {
+      disposeAllParkedTerminalWatchers()
+      resetTerminalScrollbackDemotion()
+    },
+    []
+  )
   // Auto-create first tab when worktree activates
   useEffect(() => {
     if (!workspaceSessionReady) {

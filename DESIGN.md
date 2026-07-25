@@ -333,3 +333,59 @@ targeted vitest suites; no max-lines disables.
 - Revert story: each option is a separable commit; B's eviction is additive
   to the parking effect and reverts cleanly; A's paint change falls back to
   the relay-replay branch which remains intact.
+
+## 8. Implementation notes (as built — deltas and residuals)
+
+Landed as four commits on this branch (A, B, C, plus an A paint-path fix):
+
+1. **A paint is inline, not via `applyMainBufferSnapshot`.** That function
+   runs its own `structuralReplayCoordinator.run`; calling it from
+   `applyReattachPayload` (already inside the coordinator when a relay replay
+   exists) deadlocks on the coordinator's tail chain. The paint mirrors the
+   daemon-snapshot branch (folded `scrollbackAnsi` + rehydrate + screen,
+   dimension-matched, escape tail last) and arms
+   `setRestoredSnapshotBaseline` so deferred/live chunks the snapshot covers
+   dedupe instead of double-painting.
+2. **B is force-park, not unmount-from-`mountedWorktreeIdsRef`.** Force-parked
+   ids join the existing parked set after the coverage veto, so every
+   downstream mechanism (render null, watcher sync, reveal) is the ordinary
+   parking machinery; the only new state is the verdict itself. Blast radius
+   shrank accordingly.
+3. **Last-active exemption applies to eviction too** (ranking reuses
+   `selectIdsBeyondHotRetain`): a SINGLE hidden un-parkable worktree is never
+   force-parked — one warm slot is the deliberate floor, matching parking
+   semantics. The field profile this targets is many-worktree.
+4. **Residual: empty relay replay on parked-SSH reveal.** If relay `buffered`
+   is empty (relay restart), `hasStructuralReplay` is false and nothing
+   paints (pre-existing app-restart behavior). When the hidden-delivery gate
+   dropped bytes during the park, main's `pty:modelRestoreNeeded` marker
+   fires on reveal and repaints from the model with seq dedupe — so the
+   blank case is confined to relay-restart with no dropped-byte marker.
+5. **Residual (pre-existing, unchanged):** parked/evicted fact-mode watchers
+   omit `onCommandFinished`/`onCommandCode*`; OSC 133;D command-lifecycle
+   facts drop while parked.
+
+Test coverage vs gate condition 5:
+- SSH park+reveal round-trip with scrollback-depth assertion:
+  `tests/e2e/ssh-terminal-parking.spec.ts` (Docker-gated,
+  `ORCA_E2E_SSH_DOCKER=1`, same lane as the other SSH relay specs) + unit
+  coverage of eligibility/coverage/paint-source decisions.
+- Folder workspaces: unit parity case (worktree-shaped id equality) in
+  `terminal-hidden-view-parking.test.ts`; the local parking e2e already runs
+  on folder-workspace-shaped ids.
+- Remote-runtime eviction under B: covered at the selector level
+  (`terminal-hidden-worktree-retention.test.ts`); a live e2e needs either two
+  remote worktrees in the rig or a retention-limit e2e override (the
+  last-active exemption shields a single candidate) — follow-up, noted here
+  so it isn't lost.
+- Fail-open exemption: unit-covered (`isEvictionExemptTerminalTab` + selector
+  exclusion case).
+- C demotion+restore: unit-covered (selector TTL/monotone cases, registry
+  notify damping, row clamp); demotion applies through the same
+  `applyTerminalScrollbackRowsToMountedPanes` path the existing
+  settings-change e2e exercises.
+- Flip-loop regression (condition 4): policy-level idempotence +
+  time-monotone membership tests for both new selectors, plus notify damping
+  on the demotion registry; the component-level damping conventions (verdict
+  out of own deps, set-equality bail, positive-delay timers) are preserved
+  unchanged.

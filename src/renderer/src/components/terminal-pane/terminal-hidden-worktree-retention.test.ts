@@ -4,6 +4,7 @@ import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
   isEvictionExemptTerminalTab,
   selectRetentionForceParkedTerminalWorktrees,
+  selectScrollbackDemotedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-hidden-worktree-retention'
 
@@ -137,5 +138,85 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
         expect(later.has(id)).toBe(true)
       }
     }
+  })
+})
+
+describe('selectScrollbackDemotedTerminalWorktrees', () => {
+  const nowMs = 5_000_000
+  const aged = nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+  const base = {
+    parkingEnabled: true,
+    retentionBudgetEnabled: true,
+    demotionEnabled: true,
+    nowMs
+  }
+
+  function exemptCandidate(
+    worktreeId: string,
+    hiddenSinceMs: number | null,
+    partial: Partial<TerminalWorktreeRetentionCandidate> = {}
+  ): TerminalWorktreeRetentionCandidate {
+    return {
+      worktreeId,
+      hiddenSinceMs,
+      isVisible: false,
+      shouldMeasureHiddenWorktree: false,
+      hasActivityTerminalPortal: false,
+      ordinaryParkingCovers: false,
+      hasEvictionExemptTab: true,
+      hasPendingSpawnWork: false,
+      ...partial
+    }
+  }
+
+  it('demotes only eviction-exempt worktrees hidden past the TTL', () => {
+    const selected = selectScrollbackDemotedTerminalWorktrees({
+      ...base,
+      worktrees: [
+        exemptCandidate('wt-aged', aged),
+        exemptCandidate('wt-recent', nowMs - 60_000),
+        exemptCandidate('wt-not-exempt', aged, { hasEvictionExemptTab: false }),
+        exemptCandidate('wt-visible', aged, { isVisible: true }),
+        exemptCandidate('wt-portal', aged, { hasActivityTerminalPortal: true }),
+        exemptCandidate('wt-pending', aged, { hasPendingSpawnWork: true }),
+        exemptCandidate('wt-unhidden', null)
+      ]
+    })
+    expect(selected).toEqual(new Set(['wt-aged']))
+  })
+
+  it('returns empty when any kill switch is off', () => {
+    const worktrees = [exemptCandidate('wt-aged', aged)]
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, parkingEnabled: false })
+    ).toEqual(new Set())
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({
+        ...base,
+        worktrees,
+        retentionBudgetEnabled: false
+      })
+    ).toEqual(new Set())
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, demotionEnabled: false })
+    ).toEqual(new Set())
+  })
+
+  it('honors the retentionTtlMs override and stays time-monotone', () => {
+    const worktrees = [exemptCandidate('wt-1', nowMs - 500)]
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, retentionTtlMs: 400 })
+    ).toEqual(new Set(['wt-1']))
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({ ...base, worktrees, retentionTtlMs: 600 })
+    ).toEqual(new Set())
+    expect(
+      selectScrollbackDemotedTerminalWorktrees({
+        ...base,
+        worktrees,
+        retentionTtlMs: 600,
+        nowMs: nowMs + 200
+      })
+    ).toEqual(new Set(['wt-1']))
   })
 })

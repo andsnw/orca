@@ -90,3 +90,40 @@ export function selectRetentionForceParkedTerminalWorktrees(
     hotRetainLimit: args.retentionLimit ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT
   })
 }
+
+/**
+ * Eviction-exempt worktrees (see isEvictionExemptTerminalTab) stay mounted, so
+ * past the retention TTL their hidden panes demote to the minimum scrollback
+ * tier instead. Time-monotone for fixed inputs: membership only ever grows
+ * until a reveal resets hiddenSince — no oscillation surface.
+ */
+export function selectScrollbackDemotedTerminalWorktrees(
+  args: {
+    worktrees: readonly TerminalWorktreeRetentionCandidate[]
+    parkingEnabled: boolean
+    retentionBudgetEnabled: boolean
+    demotionEnabled: boolean
+    nowMs: number
+  } & TerminalColdParkPolicyOverrides
+): Set<string> {
+  if (!args.parkingEnabled || !args.retentionBudgetEnabled || !args.demotionEnabled) {
+    return new Set()
+  }
+  const ttlMs = args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+  const demoted = new Set<string>()
+  for (const worktree of args.worktrees) {
+    if (
+      worktree.hiddenSinceMs === null ||
+      worktree.isVisible ||
+      worktree.shouldMeasureHiddenWorktree ||
+      worktree.hasActivityTerminalPortal ||
+      !worktree.hasEvictionExemptTab ||
+      worktree.hasPendingSpawnWork ||
+      args.nowMs - worktree.hiddenSinceMs < ttlMs
+    ) {
+      continue
+    }
+    demoted.add(worktree.worktreeId)
+  }
+  return demoted
+}

@@ -16,6 +16,10 @@ import {
 } from '@/lib/pane-manager/pane-terminal-options'
 import { normalizeDesktopTerminalScrollbackRows } from '../../../../shared/terminal-scrollback-policy'
 import {
+  demotedTerminalScrollbackRows,
+  useTerminalWorktreeScrollbackDemoted
+} from './terminal-hidden-scrollback-demotion'
+import {
   configureTerminalOutputBacklogCap,
   writeTerminalOutput
 } from '@/lib/pane-manager/pane-terminal-output-scheduler'
@@ -562,6 +566,8 @@ export function useTerminalPaneLifecycle({
   const terminalScrollbackRows = normalizeDesktopTerminalScrollbackRows(
     settings?.terminalScrollbackRows
   )
+  // C1 slice C: hidden eviction-exempt worktrees drop to the minimum scrollback tier past the retention TTL.
+  const scrollbackDemoted = useTerminalWorktreeScrollbackDemoted(worktreeId)
   // Why here: backlog cap scales with the scrollback setting; set it where the setting is read to stay in lockstep.
   configureTerminalOutputBacklogCap(settings?.terminalScrollbackRows)
   const systemPrefersDarkRef = useRef(systemPrefersDark)
@@ -1804,8 +1810,13 @@ export function useTerminalPaneLifecycle({
       return
     }
     // Why: live row-retention changes are xterm option updates only — must not recreate/replay/refit/resize/signal the PTY.
-    applyTerminalScrollbackRowsToMountedPanes(manager, terminalScrollbackRows)
-  }, [managerRef, terminalScrollbackRows])
+    applyTerminalScrollbackRowsToMountedPanes(
+      manager,
+      scrollbackDemoted
+        ? demotedTerminalScrollbackRows(terminalScrollbackRows)
+        : terminalScrollbackRows
+    )
+  }, [managerRef, scrollbackDemoted, terminalScrollbackRows])
 
   useEffect(() => {
     const manager = managerRef.current

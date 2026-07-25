@@ -88,8 +88,10 @@ import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
   isEvictionExemptTerminalTab,
   selectRetentionForceParkedTerminalWorktrees,
+  selectScrollbackDemotedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-pane/terminal-hidden-worktree-retention'
+import { setScrollbackDemotedTerminalWorktrees } from './terminal-pane/terminal-hidden-scrollback-demotion'
 import { shutdownBufferCaptures } from './terminal-pane/shutdown-buffer-captures'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
@@ -279,6 +281,9 @@ function Terminal(): React.JSX.Element | null {
   const terminalSshParkingEnabled = useAppStore((s) => s.settings?.terminalSshViewParking !== false)
   const terminalRetentionBudgetEnabled = useAppStore(
     (s) => s.settings?.terminalHiddenWorktreeRetentionBudget !== false
+  )
+  const terminalScrollbackDemotionEnabled = useAppStore(
+    (s) => s.settings?.terminalHiddenScrollbackDemotion !== false
   )
   const terminalTitleSnapshotAuthorityEnabled = useAppStore((s) =>
     isMainTerminalSideEffectAuthorityForPty({
@@ -961,13 +966,26 @@ function Terminal(): React.JSX.Element | null {
         ? current
         : nextParkedTerminalWorktreeIds
     )
+    // C1 slice C: eviction-exempt worktrees stay mounted, so past the TTL their
+    // hidden panes demote to the minimum scrollback tier instead of unmounting.
+    setScrollbackDemotedTerminalWorktrees(
+      selectScrollbackDemotedTerminalWorktrees({
+        worktrees: retentionBudgetCandidates,
+        parkingEnabled: terminalParkingEnabled,
+        retentionBudgetEnabled: terminalRetentionBudgetEnabled,
+        demotionEnabled: terminalScrollbackDemotionEnabled,
+        nowMs,
+        ...overrides
+      })
+    )
     const retentionTtlEligibleIds = new Set(
       retentionBudgetCandidates
         .filter(
           (candidate) =>
             !candidate.ordinaryParkingCovers &&
-            !candidate.hasEvictionExemptTab &&
-            !candidate.hasPendingSpawnWork
+            !candidate.hasPendingSpawnWork &&
+            // Why: exempt worktrees still need the TTL wakeup — it fires their scrollback demotion.
+            (!candidate.hasEvictionExemptTab || terminalScrollbackDemotionEnabled)
         )
         .map((candidate) => candidate.worktreeId)
     )
@@ -1012,6 +1030,7 @@ function Terminal(): React.JSX.Element | null {
     terminalParkingEnabled,
     terminalParkingRevision,
     terminalRetentionBudgetEnabled,
+    terminalScrollbackDemotionEnabled,
     terminalSshParkingEnabled,
     workspaceSurfaces
   ])

@@ -21,14 +21,23 @@ vi.mock('./parcel-watcher-process', () => ({
 }))
 
 // Records every stat target so a test can assert which paths a parked poll stopped touching.
-const { statCalls } = vi.hoisted(() => ({ statCalls: [] as string[] }))
+const { statCalls, transientStatFailures } = vi.hoisted(() => ({
+  statCalls: [] as string[],
+  transientStatFailures: new Map<string, number>()
+}))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFsPromises>()
   return {
     ...actual,
-    stat: (...args: Parameters<typeof actual.stat>) => {
-      statCalls.push(String(args[0]))
+    stat: async (...args: Parameters<typeof actual.stat>) => {
+      const path = String(args[0])
+      statCalls.push(path)
+      const remainingFailures = transientStatFailures.get(path) ?? 0
+      if (remainingFailures > 0) {
+        transientStatFailures.set(path, remainingFailures - 1)
+        throw Object.assign(new Error('transient stat failure'), { code: 'EIO' })
+      }
       return actual.stat(...args)
     }
   }
@@ -89,6 +98,7 @@ describe('worktree git-common narrow watch (darwin)', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()))
     childSubscriptions = []
     statCalls.length = 0
+    transientStatFailures.clear()
     subscribeMock.mockReset()
   })
 
@@ -144,6 +154,46 @@ describe('worktree git-common narrow watch (darwin)', () => {
     const entryPath = join(commonDir, 'worktrees', 'wt-a')
     childSubscriptions[0].callback(null, [{ type: 'create', path: entryPath }])
     expect(received.flat()).toContainEqual({ type: 'create', path: entryPath })
+  })
+
+  it('installs the narrow stream and retries a transient primary baseline failure', async () => {
+    installSubscribeMock()
+    const commonDir = await makeCommonDir(true)
+    const headPath = join(commonDir, 'HEAD')
+    transientStatFailures.set(headPath, 1)
+    const received: WorktreeBasePollEvent[][] = []
+    await startWatch(commonDir, received)
+
+    expect(subscribeMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(received.flat()).toContainEqual({ type: 'update', path: headPath })
+    })
+  })
+
+  it('resets the idle primary poll when the native stream reports activity', async () => {
+    installSubscribeMock()
+    const commonDir = await makeCommonDir(true)
+    const fullScans: number[] = []
+    const watch = await startGitCommonWatch(
+      makeTarget(commonDir),
+      () => {},
+      POLL_MS,
+      'darwin',
+      alwaysVisible,
+      () => fullScans.push(performance.now()),
+      1_000,
+      3_000
+    )
+    cleanups.push(() => watch.unsubscribe())
+
+    await vi.waitFor(() => expect(fullScans.length).toBeGreaterThanOrEqual(3))
+    const scansBeforeNativeEvent = fullScans.length
+    childSubscriptions[0].callback(null, [
+      { type: 'update', path: join(commonDir, 'worktrees', 'native-change', 'HEAD') }
+    ])
+    await vi.waitFor(() => expect(fullScans.length).toBeGreaterThan(scansBeforeNativeEvent), {
+      timeout: 250
+    })
   })
 
   it('tears down and re-arms when the watched root is deleted', async () => {
@@ -392,6 +442,7 @@ describe('worktree git-common polling gate (non-darwin)', () => {
 
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()))
+    transientStatFailures.clear()
   })
 
   async function makePollingCommonDir(): Promise<string> {
@@ -445,6 +496,19 @@ describe('worktree git-common polling gate (non-darwin)', () => {
 
     expect(fullScans).not.toHaveBeenCalled()
     expect(received.flat()).toHaveLength(0)
+  })
+
+  it('installs the poller and resyncs after a transient initial baseline failure', async () => {
+    const commonDir = await makePollingCommonDir()
+    const worktreesDir = join(commonDir, 'worktrees')
+    transientStatFailures.set(worktreesDir, 1)
+    const received: WorktreeBasePollEvent[][] = []
+
+    await startPollingWatch(commonDir, received)
+
+    await vi.waitFor(() => {
+      expect(received.flat()).toContainEqual({ type: 'update', path: worktreesDir })
+    })
   })
 
   it('detects linked worktree add and remove from the every-tick readdir', async () => {

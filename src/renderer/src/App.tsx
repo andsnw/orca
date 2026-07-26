@@ -145,7 +145,12 @@ import {
   timeRendererStartupStep,
   timeRendererStartupSyncStep
 } from './startup/startup-diagnostics'
-import { reconnectSshTargetForRendererStartup } from './startup/ssh-startup-reconnect'
+import {
+  partitionSshStartupReconnectTargets,
+  reconnectSshTargetsForRendererStartup,
+  resolveSshStartupActiveWorkspaceId,
+  type SshStartupReconnectBatchResult
+} from './startup/ssh-startup-reconnect'
 import { shouldRenderPetOverlay } from './components/pet/pet-overlay-visibility'
 import { applyDocumentTheme } from './lib/document-theme'
 import { getSystemPrefersDark } from './lib/terminal-theme'
@@ -189,6 +194,7 @@ import {
   type ExecutionHostId
 } from '../../shared/execution-host'
 import { mapWithConcurrency } from '../../shared/map-with-concurrency'
+import { getConnectionIdFromState } from './lib/connection-owner-resolution'
 import {
   ModifierDoubleTapDetector,
   toModifierDoubleTapEvent
@@ -454,6 +460,7 @@ function App(): React.JSX.Element {
       fetchBrowserSessionProfiles: s.fetchBrowserSessionProfiles,
       reconnectPersistedTerminals: s.reconnectPersistedTerminals,
       setDeferredSshReconnectTargets: s.setDeferredSshReconnectTargets,
+      removeDeferredSshReconnectTarget: s.removeDeferredSshReconnectTarget,
       setSshConnectionState: s.setSshConnectionState,
       hydratePersistedUI: s.hydratePersistedUI,
       setHydrationSucceeded: s.setHydrationSucceeded,
@@ -981,59 +988,77 @@ function App(): React.JSX.Element {
               const eagerTargets = targets.filter((t) => !t.needsPassphrase)
               const deferredTargets = targets.filter((t) => t.needsPassphrase)
 
-              if (deferredTargets.length > 0) {
-                actions.setDeferredSshReconnectTargets(deferredTargets.map((t) => t.targetId))
+              const startupState = useAppStore.getState()
+              const activeWorkspaceId = resolveSshStartupActiveWorkspaceId({
+                activeWorkspaceKey: startupState.activeWorkspaceKey,
+                activeWorktreeId: startupState.activeWorktreeId
+              })
+              const activeConnectionId = getConnectionIdFromState(startupState, activeWorkspaceId)
+              const { criticalTargetIds, backgroundTargetIds } =
+                partitionSshStartupReconnectTargets({
+                  targetIds: eagerTargets.map(({ targetId }) => targetId),
+                  activeTargetIds:
+                    typeof activeConnectionId === 'string' ? [activeConnectionId] : [],
+                  activeTabId: sessionRead.session.activeTabId,
+                  remoteSessionIdsByTabId: sessionRead.session.remoteSessionIdsByTabId
+                })
+              actions.setDeferredSshReconnectTargets([
+                ...new Set(targets.map(({ targetId }) => targetId))
+              ])
+
+              const reconnectTargets = (targetIds: readonly string[]) =>
+                reconnectSshTargetsForRendererStartup({
+                  targetIds,
+                  budgetMs: SSH_RECONNECT_TIMEOUT_MS,
+                  signal: abortController.signal,
+                  connect: (targetId) => window.api.ssh.connect({ targetId }),
+                  publishState: actions.setSshConnectionState,
+                  onFailure: (targetId, error) => {
+                    console.warn(`SSH auto-reconnect failed for ${targetId}:`, error)
+                  }
+                })
+              const finalizeCompletedTargets = async (
+                results: readonly SshStartupReconnectBatchResult[]
+              ): Promise<void> => {
+                for (const { targetId, outcome } of results) {
+                  if (outcome !== 'completed' || abortController.signal.aborted) {
+                    continue
+                  }
+                  // Why: older/wrapped providers may return no connect state; poll once before releasing the deferred pane gate.
+                  try {
+                    const state = await window.api.ssh.getState({ targetId })
+                    if (state?.status === 'connected') {
+                      actions.setSshConnectionState(targetId, state)
+                    }
+                  } catch {
+                    /* best-effort */
+                  }
+                  if (!abortController.signal.aborted) {
+                    actions.removeDeferredSshReconnectTarget(targetId)
+                  }
+                }
               }
 
-              // Why: treat timed-out eager targets as deferred so their PTYs reattach on tab focus (ssh.connect keeps running in main and likely finishes by then).
-              const timedOutTargets: string[] = []
-              await timeRendererStartupStep(
+              const criticalResults = await timeRendererStartupStep(
                 'ssh-reconnect',
-                () =>
-                  Promise.all(
-                    eagerTargets.map(async ({ targetId }) => {
-                      const result = await reconnectSshTargetForRendererStartup({
-                        targetId,
-                        timeoutMs: SSH_RECONNECT_TIMEOUT_MS,
-                        connect: (id) => window.api.ssh.connect({ targetId: id }),
-                        publishState: actions.setSshConnectionState,
-                        onFailure: (id, error) => {
-                          console.warn(`SSH auto-reconnect failed for ${id}:`, error)
-                        }
-                      })
-                      if (result.timedOut) {
-                        timedOutTargets.push(targetId)
-                      }
-                    })
-                  ),
+                () => reconnectTargets(criticalTargetIds),
                 {
-                  eagerTargets: eagerTargets.length,
+                  criticalTargets: criticalTargetIds.length,
+                  backgroundTargets: backgroundTargetIds.length,
                   deferredTargets: deferredTargets.length
                 }
               )
-              if (timedOutTargets.length > 0) {
-                actions.setDeferredSshReconnectTargets([
-                  ...deferredTargets.map((t) => t.targetId),
-                  ...timedOutTargets
-                ])
-              }
-
-              // Why: older/wrapped providers may return no state from connect; poll main once as a compatibility fallback before terminal restoration.
-              for (const { targetId } of eagerTargets) {
-                if (timedOutTargets.includes(targetId)) {
-                  continue
-                }
-                try {
-                  const state = await window.api.ssh.getState({ targetId })
-                  console.warn(
-                    `[ssh-restore] Polled state for ${targetId}: status=${state?.status}`
-                  )
-                  if (state?.status === 'connected') {
-                    actions.setSshConnectionState(targetId, state)
-                  }
-                } catch {
-                  /* best-effort */
-                }
+              await finalizeCompletedTargets(criticalResults)
+              if (
+                criticalResults.every(({ outcome }) => outcome === 'completed') &&
+                backgroundTargetIds.length > 0 &&
+                !abortController.signal.aborted
+              ) {
+                void timeRendererStartupStep('ssh-reconnect-background', () =>
+                  reconnectTargets(backgroundTargetIds)
+                )
+                  .then(finalizeCompletedTargets)
+                  .catch((error) => console.warn('SSH background reconnect failed:', error))
               }
             } catch (err) {
               console.warn('SSH startup reconnect failed:', err)

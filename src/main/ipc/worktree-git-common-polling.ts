@@ -5,6 +5,11 @@ import type {
   WorktreeBaseSubscription,
   WorktreePollerWindowVisibility
 } from './worktree-base-directory-poller'
+import {
+  startAdaptiveGitCommonPoller,
+  tryTakeGitCommonPollBaseline,
+  type GitCommonPollingCadence
+} from './worktree-git-common-poll-cadence'
 
 // Shared with the darwin primary-metadata poll so platforms cannot drift.
 // `logs/HEAD` catches head moves; `config.worktree` carries the sparse flag.
@@ -18,13 +23,14 @@ export const PRIMARY_CHECKOUT_METADATA_FILES = [
 const LINKED_WORKTREE_STRUCTURAL_METADATA_FILES = ['HEAD', 'gitdir', 'locked', 'config.worktree']
 const LINKED_WORKTREE_INDEX_FILE = 'index'
 const LINKED_WORKTREE_HEAD_LOG_FILE = join('logs', 'HEAD')
-// Why: the entry-dir signature gate can miss same-granule index rewrites on
-// coarse-mtime filesystems; a periodic ungated re-stat bounds that miss the
-// same way the base poller's backstop rescan does.
-const INDEX_BACKSTOP_TICKS = 15
 
 function statSignature(s: { mtimeMs: number; ctimeMs: number; ino: number }): string {
   return `${s.mtimeMs}:${s.ctimeMs}:${s.ino}`
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'ENOENT' || code === 'ENOTDIR'
 }
 
 async function dirSignature(path: string): Promise<string> {
@@ -33,8 +39,11 @@ async function dirSignature(path: string): Promise<string> {
     // allocation change would otherwise slip the readdir gate to the backstop.
     const s = await stat(path)
     return `${statSignature(s)}:${s.size}`
-  } catch {
-    return 'missing'
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return 'missing'
+    }
+    throw error
   }
 }
 
@@ -42,8 +51,11 @@ async function fileSignature(path: string): Promise<string | null> {
   try {
     const s = await stat(path)
     return s.isFile() ? `${statSignature(s)}:${s.size}` : null
-  } catch {
-    return null
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return null
+    }
+    throw error
   }
 }
 
@@ -144,15 +156,11 @@ async function snapshotGitCommon(
       .filter((entry) => entry.isDirectory())
       .map((entry) => join(worktreesDir, entry.name))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isMissingPathError(error)) {
       // Dir genuinely absent (no linked worktrees, or all removed) → authoritative empty listing.
       entryPaths = []
     } else {
-      // Why: a TRANSIENT readdir failure (EIO/ESTALE/EMFILE, network/SSH hiccup) must not masquerade as
-      // "every worktree removed" — that would emit false delete events (and false creates next tick).
-      // Reuse the known entries so per-entry stats still run; a real removal surfaces as that entry's own
-      // stat miss (handled in snapshotGitCommonEntry), and the next successful readdir catches any add.
-      entryPaths = previous ? [...previous.entries.keys()] : []
+      throw error
     }
   }
 
@@ -256,45 +264,40 @@ function diffGitCommon(
 export async function startGitCommonPolling(
   commonDirPath: string,
   onEvents: (events: WorktreeBasePollEvent[]) => void,
-  pollIntervalMs: number,
+  cadence: GitCommonPollingCadence,
   visibility: WorktreePollerWindowVisibility,
   onFullScan?: () => void,
   includePrimary = true
 ): Promise<WorktreeBaseSubscription> {
   let disposed = false
-  let ticking = false
-  let tickCount = 0
-  let snapshot = await snapshotGitCommon(commonDirPath, undefined, includePrimary)
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let parkedWhileHidden = false
-
-  const tick = async (forceFullScan = false): Promise<void> => {
-    timer = null
-    if (disposed) {
-      return
-    }
-    if (!visibility.isWindowVisible()) {
-      parkedWhileHidden = true
-      return
-    }
-    if (ticking) {
-      return
-    }
-    ticking = true
-    // Why: measure from tick start so cadence is start-to-start, not gap-after-completion (which would
-    // land each visible refresh a full scan-duration late every tick).
-    const startedAt = Date.now()
-    tickCount++
-    const shouldForceFullScan = forceFullScan || tickCount % INDEX_BACKSTOP_TICKS === 0
-    try {
+  let snapshot = await tryTakeGitCommonPollBaseline(() =>
+    snapshotGitCommon(commonDirPath, undefined, includePrimary)
+  )
+  const polling = startAdaptiveGitCommonPoller({
+    cadence,
+    visibility,
+    poll: async (forceFullScan) => {
       const next = await snapshotGitCommon(
         commonDirPath,
-        snapshot,
+        snapshot ?? undefined,
         includePrimary,
-        shouldForceFullScan
+        forceFullScan
       )
       if (disposed) {
-        return
+        return { changed: false }
+      }
+      if (!snapshot) {
+        snapshot = next
+        onEvents([
+          { type: 'update', path: join(commonDirPath, 'worktrees') },
+          ...(includePrimary
+            ? PRIMARY_CHECKOUT_METADATA_FILES.map((name) => ({
+                type: 'update' as const,
+                path: join(commonDirPath, name)
+              }))
+            : [])
+        ])
+        return { changed: true }
       }
       if (next.didFullScan) {
         onFullScan?.()
@@ -304,44 +307,14 @@ export async function startGitCommonPolling(
       if (events.length > 0) {
         onEvents(events)
       }
-    } catch {
-      // Transient fs error: keep the previous snapshot and retry next tick.
-    } finally {
-      ticking = false
+      return { changed: events.length > 0 }
     }
-    if (!disposed) {
-      // Why: clamp to [0, pollIntervalMs]. Date.now() is not monotonic — a backward wall-clock jump (NTP) would
-      // otherwise make elapsed negative and push the next tick out by the adjustment (suppressing refreshes for
-      // minutes); the upper clamp caps the wait at one interval, the lower clamp keeps a long scan from going negative.
-      const nextDelay = Math.max(
-        0,
-        Math.min(pollIntervalMs, pollIntervalMs - (Date.now() - startedAt))
-      )
-      timer = setTimeout(() => void tick(), nextDelay)
-      timer.unref?.()
-    }
-  }
-
-  const unsubscribeVisibility = visibility.onWindowBecameVisible(() => {
-    if (disposed || !parkedWhileHidden) {
-      return
-    }
-    parkedWhileHidden = false
-    // Why: a linked index can change without its parent dir signature moving;
-    // force the leaf read when diffing the retained pre-hide snapshot.
-    void tick(true)
   })
-
-  timer = setTimeout(() => void tick(), pollIntervalMs)
-  timer.unref?.()
 
   return {
     unsubscribe: async () => {
       disposed = true
-      if (timer) {
-        clearTimeout(timer)
-      }
-      unsubscribeVisibility()
+      await polling.unsubscribe()
     }
   }
 }

@@ -66,3 +66,18 @@ export function shouldFetchSshReattachModelSnapshot(args: {
 }): boolean {
   return args.sshParkingEnabled && parseAppSshPtyId(args.ptyId) !== null
 }
+
+/**
+ * Single-flight memo for the reattach model probe: at most one
+ * getMainBufferSnapshot per reattach attempt. A null prefetch is remembered so
+ * the payload task never buys a second probe timeout — it paints relay instead.
+ */
+export function memoizeSshReattachModelSnapshotProbe<T>(
+  probe: () => Promise<T | null>
+): () => Promise<T | null> {
+  let inFlight: Promise<T | null> | null = null
+  return () => {
+    inFlight ??= probe()
+    return inFlight
+  }
+}

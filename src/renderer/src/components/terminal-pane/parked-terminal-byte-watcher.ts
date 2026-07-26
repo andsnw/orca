@@ -18,7 +18,10 @@ import {
 } from './agent-task-complete-policy'
 import { createCommandCodeOutputStatusDetector } from '../../../../shared/command-code-output-status'
 import { createOsc133CommandFinishedScanner } from '../../../../shared/terminal-osc133-command-finished'
-import { createParkedTerminalCommandStatusPolicy } from './parked-terminal-command-status'
+import {
+  createParkedTerminalCommandStatusPolicy,
+  readInFlightCommandCodeTurn
+} from './parked-terminal-command-status'
 import { startParkedTerminalMode2031Responder } from './parked-terminal-mode2031-responder'
 import { subscribeToPtyData } from './pty-data-sidecar-subscriptions'
 import { createPtyOutputProcessor } from './pty-transport'
@@ -62,17 +65,6 @@ export type ParkedTerminalByteWatcherOptions = {
 }
 
 const parkedWatcherDisposersByPtyId = new Map<string, () => void>()
-
-// Why only 'working': an in-flight turn is the one state the parked byte path can still
-// resolve, and it proves the Command Code TUI is live — a stale 'done' row would arm the
-// scrape against whatever process replaced it.
-function readInFlightCommandCodeTurn(paneKey: string): { prompt: string } | null {
-  const entry = useAppStore.getState().agentStatusByPaneKey?.[paneKey]
-  if (entry?.agentType !== 'command-code' || entry.state !== 'working') {
-    return null
-  }
-  return { prompt: entry.prompt }
-}
 
 export function startParkedTerminalByteWatcher(
   options: ParkedTerminalByteWatcherOptions

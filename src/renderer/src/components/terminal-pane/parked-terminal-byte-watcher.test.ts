@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TerminalSideEffectFact } from '../../../../shared/terminal-side-effect-facts'
 import type { ParkedTerminalByteWatcherOptions } from './parked-terminal-byte-watcher'
+import type * as ParkedTerminalCommandStatus from './parked-terminal-command-status'
 
 const PTY_ID = 'pty-parked-1'
 const TAB_ID = 'tab-1'
@@ -52,7 +53,9 @@ const commandStatusPolicy = {
   onCommandCodeDone: vi.fn(),
   dispose: vi.fn()
 }
-vi.mock('./parked-terminal-command-status', () => ({
+// Partial mock: readInFlightCommandCodeTurn stays real so detector seeding reads the store.
+vi.mock('./parked-terminal-command-status', async (importOriginal) => ({
+  ...(await importOriginal<typeof ParkedTerminalCommandStatus>()),
   createParkedTerminalCommandStatusPolicy: vi.fn(() => commandStatusPolicy)
 }))
 

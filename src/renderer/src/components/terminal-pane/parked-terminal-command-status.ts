@@ -22,6 +22,18 @@ export type ParkedTerminalCommandStatusPolicy = {
   dispose: () => void
 }
 
+// Why only 'working': an in-flight turn is the one state a recreated detector can still
+// resolve, and it proves the Command Code TUI is live — a stale 'done' row would arm the
+// scrape against whatever process replaced it. Shared by parked watchers and the reveal
+// remount, which both recreate the detector long past the banner.
+export function readInFlightCommandCodeTurn(paneKey: string): { prompt: string } | null {
+  const entry = useAppStore.getState().agentStatusByPaneKey?.[paneKey]
+  if (entry?.agentType !== 'command-code' || entry.state !== 'working') {
+    return null
+  }
+  return { prompt: entry.prompt }
+}
+
 export function createParkedTerminalCommandStatusPolicy(options: {
   ptyId: string
   worktreeId: string
@@ -33,12 +45,15 @@ export function createParkedTerminalCommandStatusPolicy(options: {
   const { ptyId, worktreeId, tabId, paneId, paneKey } = options
   let disposed = false
   let commandCodeOutputDoneTimer: ReturnType<typeof setTimeout> | null = null
+  // Non-null exactly while a done-settle timer pends; lets dispose flush the settle.
+  let pendingCommandCodeDonePrompt: string | null = null
 
   const clearCommandCodeOutputDoneTimer = (): void => {
     if (commandCodeOutputDoneTimer !== null) {
       clearTimeout(commandCodeOutputDoneTimer)
       commandCodeOutputDoneTimer = null
     }
+    pendingCommandCodeDonePrompt = null
   }
 
   const resolveRouting = (): ReturnType<typeof resolveLiveAgentStatusConnectionRouting> => {
@@ -79,6 +94,36 @@ export function createParkedTerminalCommandStatusPolicy(options: {
       return
     }
     state.dropAgentStatus(paneKey)
+  }
+
+  // Shared by the settle timer and the dispose flush: complete the row only while it is
+  // still this turn's command-code/working entry.
+  const settleCommandCodeDone = (normalizedPrompt: string): void => {
+    const routing = resolveRouting()
+    if (!routing) {
+      return
+    }
+    const currentState = useAppStore.getState()
+    const currentEntry = currentState.agentStatusByPaneKey[paneKey]
+    if (currentEntry?.agentType !== 'command-code' || currentEntry.state !== 'working') {
+      return
+    }
+    const currentPrompt = currentEntry.prompt.trim()
+    if (currentPrompt && currentPrompt !== normalizedPrompt) {
+      return
+    }
+    const currentTitle = currentState.runtimePaneTitlesByTabId?.[tabId]?.[paneId]
+    currentState.setAgentStatus(
+      paneKey,
+      {
+        state: 'done',
+        prompt: currentPrompt || normalizedPrompt,
+        agentType: 'command-code'
+      },
+      currentTitle,
+      undefined,
+      routing
+    )
   }
 
   return {
@@ -139,42 +184,28 @@ export function createParkedTerminalCommandStatusPolicy(options: {
       if (!normalizedPrompt) {
         return
       }
+      pendingCommandCodeDonePrompt = normalizedPrompt
       commandCodeOutputDoneTimer = setTimeout(() => {
         commandCodeOutputDoneTimer = null
+        pendingCommandCodeDonePrompt = null
         if (disposed) {
           return
         }
-        const routing = resolveRouting()
-        if (!routing) {
-          return
-        }
-        const currentState = useAppStore.getState()
-        const currentEntry = currentState.agentStatusByPaneKey[paneKey]
-        if (currentEntry?.agentType !== 'command-code' || currentEntry.state !== 'working') {
-          return
-        }
-        const currentPrompt = currentEntry.prompt.trim()
-        if (currentPrompt && currentPrompt !== normalizedPrompt) {
-          return
-        }
-        const currentTitle = currentState.runtimePaneTitlesByTabId?.[tabId]?.[paneId]
-        currentState.setAgentStatus(
-          paneKey,
-          {
-            state: 'done',
-            prompt: currentPrompt || normalizedPrompt,
-            agentType: 'command-code'
-          },
-          currentTitle,
-          undefined,
-          routing
-        )
+        settleCommandCodeDone(normalizedPrompt)
       }, COMMAND_CODE_OUTPUT_DONE_SETTLE_MS)
     },
 
     dispose: (): void => {
-      disposed = true
+      // Why flush, not cancel: reveal disposes mid-settle and the remounted detector cannot
+      // re-observe the already-passed idle composer, so cancelling strands the row at
+      // 'working'. A rare premature 'done' (tool still running behind the composer) only
+      // shortens the settle window; the turn ends at 'done' anyway.
+      const pendingPrompt = disposed ? null : pendingCommandCodeDonePrompt
       clearCommandCodeOutputDoneTimer()
+      if (pendingPrompt !== null) {
+        settleCommandCodeDone(pendingPrompt)
+      }
+      disposed = true
     }
   }
 }

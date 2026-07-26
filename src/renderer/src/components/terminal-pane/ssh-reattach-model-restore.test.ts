@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { toAppSshPtyId } from '../../../../shared/ssh-pty-id'
 import {
   decideSshReattachPaintSource,
+  memoizeSshReattachModelSnapshotProbe,
   resolveSshReattachModelSnapshotWithTimeout,
   shouldFetchSshReattachModelSnapshot
 } from './ssh-reattach-model-restore'
@@ -46,6 +47,43 @@ describe('shouldFetchSshReattachModelSnapshot', () => {
     expect(
       shouldFetchSshReattachModelSnapshot({ ptyId: LOCAL_PTY_ID, sshParkingEnabled: true })
     ).toBe(false)
+  })
+})
+
+describe('memoizeSshReattachModelSnapshotProbe', () => {
+  it('remembers a null prefetch so the payload task never probes twice', async () => {
+    const probe = vi.fn().mockResolvedValue(null)
+    const fetchSnapshot = memoizeSshReattachModelSnapshotProbe(probe)
+
+    await expect(fetchSnapshot()).resolves.toBeNull()
+    await expect(fetchSnapshot()).resolves.toBeNull()
+
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the same resolved snapshot without re-probing', async () => {
+    const probe = vi.fn().mockResolvedValue({ data: 'screen' })
+    const fetchSnapshot = memoizeSshReattachModelSnapshotProbe(probe)
+
+    const first = await fetchSnapshot()
+    const second = await fetchSnapshot()
+
+    expect(first).toBe(second)
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('single-flights concurrent callers onto one probe', async () => {
+    let resolveProbe: (value: string | null) => void = () => {}
+    const probe = vi.fn(() => new Promise<string | null>((resolve) => (resolveProbe = resolve)))
+    const fetchSnapshot = memoizeSshReattachModelSnapshotProbe(probe)
+
+    const first = fetchSnapshot()
+    const second = fetchSnapshot()
+    resolveProbe(null)
+
+    await expect(first).resolves.toBeNull()
+    await expect(second).resolves.toBeNull()
+    expect(probe).toHaveBeenCalledTimes(1)
   })
 })
 

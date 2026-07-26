@@ -244,9 +244,11 @@ import {
 } from './terminal-snapshot-replay-paint'
 import {
   decideSshReattachPaintSource,
+  memoizeSshReattachModelSnapshotProbe,
   resolveSshReattachModelSnapshotWithTimeout,
   shouldFetchSshReattachModelSnapshot
 } from './ssh-reattach-model-restore'
+import { readInFlightCommandCodeTurn } from './parked-terminal-command-status'
 import {
   getExecutionHostIdForWorktree,
   getSettingsForWorktreeRuntimeOwner
@@ -3363,6 +3365,10 @@ export function connectPanePty(
     ? null
     : createCommandCodeOutputStatusDetector({
         startupCommand: paneStartup?.command,
+        // Why the seed: a reveal remount recreates this detector long past the banner
+        // (and with no startup command); a turn parked mid-flight must still arm the
+        // scrape so its return to the idle composer completes the row.
+        inFlightTurn: readInFlightCommandCodeTurn(cacheKey),
         onWorking: seedCommandCodeOutputWorkingStatus,
         onDone: scheduleCommandCodeOutputDoneStatus
       })
@@ -7384,25 +7390,30 @@ export function connectPanePty(
       // paint happens inline in the snapshot-branch style: applyMainBufferSnapshot
       // would nest structuralReplayCoordinator.run inside the reattach task and
       // deadlock on the coordinator's tail chain.
-      const fetchSshMainModelReattachSnapshot = async (): Promise<PtyBufferSnapshot | null> => {
-        const sshParkingEnabled = useAppStore.getState().settings?.terminalSshViewParking !== false
-        if (!shouldFetchSshReattachModelSnapshot({ ptyId, sshParkingEnabled })) {
-          return null
+      // Memoized: the prefetch and the payload task share one probe result, so a
+      // null prefetch can never buy a second timeout before the relay paint.
+      const fetchSshMainModelReattachSnapshot = memoizeSshReattachModelSnapshotProbe(
+        async (): Promise<PtyBufferSnapshot | null> => {
+          const sshParkingEnabled =
+            useAppStore.getState().settings?.terminalSshViewParking !== false
+          if (!shouldFetchSshReattachModelSnapshot({ ptyId, sshParkingEnabled })) {
+            return null
+          }
+          const snapshot = await resolveSshReattachModelSnapshotWithTimeout(
+            window.api.pty.getMainBufferSnapshot(ptyId, {
+              scrollbackRows: resolveHiddenRestoreScrollbackRows(pane.terminal.options.scrollback)
+            })
+          )
+          if (
+            !snapshot ||
+            decideSshReattachPaintSource({ ptyId, sshParkingEnabled, snapshot }) !==
+              'main-model-snapshot'
+          ) {
+            return null
+          }
+          return snapshot
         }
-        const snapshot = await resolveSshReattachModelSnapshotWithTimeout(
-          window.api.pty.getMainBufferSnapshot(ptyId, {
-            scrollbackRows: resolveHiddenRestoreScrollbackRows(pane.terminal.options.scrollback)
-          })
-        )
-        if (
-          !snapshot ||
-          decideSshReattachPaintSource({ ptyId, sshParkingEnabled, snapshot }) !==
-            'main-model-snapshot'
-        ) {
-          return null
-        }
-        return snapshot
-      }
+      )
       // Why: a relay restart empties the replay buffer, but main's model may
       // still hold the session — an SSH reattach probes it even with no replay
       // so the reveal is never blank when main has content. Prefetched (before
@@ -7456,6 +7467,10 @@ export function connectPanePty(
             }
           }
         } else if (connectResult?.replay || prefetchedSshModelSnapshot) {
+          // Deliberate: even with a relay replay in hand, ordinary SSH reattach probes
+          // the model once (bounded by the probe timeout) — the renderer cannot tell a
+          // park-reveal from a relay restart here, and the 100KiB relay tail loses
+          // scrollback the model still holds. Memoized, so this is never a second probe.
           const modelSnapshot =
             prefetchedSshModelSnapshot ?? (await fetchSshMainModelReattachSnapshot())
           if (!isCurrentReattachPayload()) {

@@ -38,6 +38,16 @@ vi.mock('@/lib/connection-owner-resolution', () => ({
   getConnectionIdFromState
 }))
 
+function makeMockStoreState(): MockStoreState {
+  return {
+    agentStatusByPaneKey: {},
+    runtimePaneTitlesByTabId: { [TAB_ID]: { [PANE_ID]: '✳ Build feature' } },
+    setAgentStatus: vi.fn(),
+    dropAgentStatus: vi.fn(),
+    clearAgentLaunchConfig: vi.fn()
+  }
+}
+
 function makeStatusEntry(overrides: Partial<AgentStatusEntry> = {}): AgentStatusEntry {
   return {
     state: 'working',
@@ -68,13 +78,7 @@ describe('createParkedTerminalCommandStatusPolicy', () => {
     dispatchTerminalCommandFinishedEvent.mockClear()
     resolveLiveAgentStatusConnectionRouting.mockReset().mockReturnValue(ROUTING)
     getConnectionIdFromState.mockReset().mockReturnValue(null)
-    mockStoreState = {
-      agentStatusByPaneKey: {},
-      runtimePaneTitlesByTabId: { [TAB_ID]: { [PANE_ID]: '✳ Build feature' } },
-      setAgentStatus: vi.fn(),
-      dropAgentStatus: vi.fn(),
-      clearAgentLaunchConfig: vi.fn()
-    }
+    mockStoreState = makeMockStoreState()
   })
 
   afterEach(() => {
@@ -171,7 +175,9 @@ describe('createParkedTerminalCommandStatusPolicy', () => {
     policy.dispose()
   })
 
-  it('dispose cancels a pending done settle', async () => {
+  // Why: reveal disposes the watcher mid-settle; cancelling would strand the row at
+  // 'working' because the remounted detector never re-observes the idle composer.
+  it('dispose flushes a pending done settle instead of stranding a working row', async () => {
     mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
       state: 'working',
       prompt: 'Fix the spinner',
@@ -181,9 +187,57 @@ describe('createParkedTerminalCommandStatusPolicy', () => {
 
     policy.onCommandCodeDone('Fix the spinner')
     policy.dispose()
+
+    expect(mockStoreState.setAgentStatus).toHaveBeenCalledWith(
+      PANE_KEY,
+      { state: 'done', prompt: 'Fix the spinner', agentType: 'command-code' },
+      '✳ Build feature',
+      undefined,
+      ROUTING
+    )
     vi.advanceTimersByTime(DONE_SETTLE_MS * 2)
+    expect(mockStoreState.setAgentStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('dispose does not flush a settle a working repaint already cancelled', async () => {
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
+      state: 'working',
+      prompt: 'Fix the spinner',
+      agentType: 'command-code'
+    })
+    const policy = await createPolicy(PTY_ID_LOCAL)
+
+    policy.onCommandCodeDone('Fix the spinner')
+    policy.onCommandCodeWorking('Fix the spinner')
+    policy.dispose()
+
+    const states = mockStoreState.setAgentStatus.mock.calls.map(([, payload]) => payload.state)
+    expect(states).toEqual(['working'])
+  })
+
+  it('dispose does not flush when another agent owns the row by then', async () => {
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({ agentType: 'claude' })
+    const policy = await createPolicy(PTY_ID_LOCAL)
+
+    policy.onCommandCodeDone('Fix the spinner')
+    policy.dispose()
 
     expect(mockStoreState.setAgentStatus).not.toHaveBeenCalled()
+  })
+
+  it('dispose after the settle fired writes done exactly once', async () => {
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
+      state: 'working',
+      prompt: 'Fix the spinner',
+      agentType: 'command-code'
+    })
+    const policy = await createPolicy(PTY_ID_LOCAL)
+
+    policy.onCommandCodeDone('Fix the spinner')
+    vi.advanceTimersByTime(DONE_SETTLE_MS)
+    policy.dispose()
+
+    expect(mockStoreState.setAgentStatus).toHaveBeenCalledTimes(1)
   })
 
   it('nudges git UI on command finished for every PTY class', async () => {
@@ -232,5 +286,38 @@ describe('createParkedTerminalCommandStatusPolicy', () => {
 
     expect(dispatchTerminalCommandFinishedEvent).not.toHaveBeenCalled()
     expect(mockStoreState.setAgentStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('readInFlightCommandCodeTurn', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    mockStoreState = makeMockStoreState()
+  })
+
+  it('returns only a working command-code turn', async () => {
+    const { readInFlightCommandCodeTurn } = await import('./parked-terminal-command-status')
+
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
+      state: 'working',
+      prompt: 'Fix the spinner',
+      agentType: 'command-code'
+    })
+    expect(readInFlightCommandCodeTurn(PANE_KEY)).toEqual({ prompt: 'Fix the spinner' })
+
+    // Why 'done' excluded: a stale done row would arm the scrape against whatever
+    // process replaced the Command Code TUI.
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
+      state: 'done',
+      prompt: 'Fix the spinner',
+      agentType: 'command-code'
+    })
+    expect(readInFlightCommandCodeTurn(PANE_KEY)).toBeNull()
+
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({ agentType: 'claude' })
+    expect(readInFlightCommandCodeTurn(PANE_KEY)).toBeNull()
+
+    delete mockStoreState.agentStatusByPaneKey[PANE_KEY]
+    expect(readInFlightCommandCodeTurn(PANE_KEY)).toBeNull()
   })
 })

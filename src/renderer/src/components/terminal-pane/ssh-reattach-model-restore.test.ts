@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { toAppSshPtyId } from '../../../../shared/ssh-pty-id'
 import {
   decideSshReattachPaintSource,
   resolveSshReattachModelSnapshotWithTimeout,
   shouldFetchSshReattachModelSnapshot
 } from './ssh-reattach-model-restore'
 
-const SSH_PTY_ID = 'ssh:conn-1@@relay-pty-1'
+// Why built, not literal: a hardcoded id would silently stop parsing as SSH if the
+// prefix/separator changed, turning these positive cases into fallback expectations.
+const SSH_PTY_ID = toAppSshPtyId('conn-1', 'relay-pty-1')
 const LOCAL_PTY_ID = 'repo::/worktree@@session-1'
 
 afterEach(() => {

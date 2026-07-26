@@ -63,6 +63,17 @@ export type ParkedTerminalByteWatcherOptions = {
 
 const parkedWatcherDisposersByPtyId = new Map<string, () => void>()
 
+// Why only 'working': an in-flight turn is the one state the parked byte path can still
+// resolve, and it proves the Command Code TUI is live — a stale 'done' row would arm the
+// scrape against whatever process replaced it.
+function readInFlightCommandCodeTurn(paneKey: string): { prompt: string } | null {
+  const entry = useAppStore.getState().agentStatusByPaneKey?.[paneKey]
+  if (entry?.agentType !== 'command-code' || entry.state !== 'working') {
+    return null
+  }
+  return { prompt: entry.prompt }
+}
+
 export function startParkedTerminalByteWatcher(
   options: ParkedTerminalByteWatcherOptions
 ): () => void {
@@ -232,9 +243,13 @@ export function startParkedTerminalByteWatcher(
   const commandFinishedScanner = mainSideEffectAuthority
     ? null
     : createOsc133CommandFinishedScanner(commandStatusPolicy.onCommandFinished)
+  // Why the seed: this detector is recreated per park cycle with no startup command
+  // to fast-arm it, and a Command Code TUI parked mid-turn is long past its banner —
+  // unseeded it would never scrape the turn's return to the idle composer.
   const commandCodeOutputStatusDetector = mainSideEffectAuthority
     ? null
     : createCommandCodeOutputStatusDetector({
+        inFlightTurn: readInFlightCommandCodeTurn(paneKey),
         onWorking: commandStatusPolicy.onCommandCodeWorking,
         onDone: commandStatusPolicy.onCommandCodeDone
       })

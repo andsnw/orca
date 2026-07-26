@@ -935,12 +935,13 @@ function Terminal(): React.JSX.Element | null {
       })
     }
 
+    const restorePolicy = { sshParkingEnabled: terminalSshParkingEnabled }
     const nextParkedTerminalWorktreeIds = selectColdParkedTerminalWorktrees({
       worktrees: retentionCandidates,
       pendingStartupByTabId,
       parkingEnabled: terminalParkingEnabled,
       nowMs,
-      restorePolicy: { sshParkingEnabled: terminalSshParkingEnabled },
+      restorePolicy,
       ...overrides
     })
     // Why memoized: the retention pass below re-asks coverage for EVERY mounted
@@ -957,6 +958,19 @@ function Terminal(): React.JSX.Element | null {
         watcherCoverageByTabId.set(tab.id, covered)
         return covered
       })
+    // Why memoized: same shape as coverage above — the retention pass asks this
+    // for every mounted worktree's tabs, and each call re-reads the store and can
+    // walk the layout tree.
+    const evictionExemptByTabId = new Map<string, boolean>()
+    const tabIsEvictionExempt = (worktreeId: string, tab: TerminalTab): boolean => {
+      const cached = evictionExemptByTabId.get(tab.id)
+      if (cached !== undefined) {
+        return cached
+      }
+      const exempt = isEvictionExemptTerminalTab(tab, worktreeId)
+      evictionExemptByTabId.set(tab.id, exempt)
+      return exempt
+    }
     // Why: a worktree with any watcher-uncoverable tab must never park, or it goes silent for bells/titles/completions (sank the first parking attempt).
     for (const worktreeId of Array.from(nextParkedTerminalWorktreeIds)) {
       if (!worktreeTabsAreWatcherCovered(worktreeId, tabsByWorktree[worktreeId] ?? [])) {
@@ -967,7 +981,6 @@ function Terminal(): React.JSX.Element | null {
     // remote-runtime, uncoverable tabs) force-park beyond a count/TTL bound —
     // added AFTER the coverage veto because darkness for their uncoverable tabs
     // is the accepted cost of bounding retention.
-    const restorePolicy = { sshParkingEnabled: terminalSshParkingEnabled }
     const retentionBudgetCandidates: TerminalWorktreeRetentionCandidate[] = retentionCandidates.map(
       (candidate) => {
         const tabs = tabsByWorktree[candidate.worktreeId] ?? []
@@ -995,9 +1008,7 @@ function Terminal(): React.JSX.Element | null {
           parkCooldownUntilMs: candidate.parkCooldownUntilMs,
           ordinaryParkingCovers:
             parkEligible && worktreeTabsAreWatcherCovered(candidate.worktreeId, tabs),
-          hasEvictionExemptTab: tabs.some((tab) =>
-            isEvictionExemptTerminalTab(tab, candidate.worktreeId)
-          ),
+          hasEvictionExemptTab: tabs.some((tab) => tabIsEvictionExempt(candidate.worktreeId, tab)),
           hasPendingSpawnWork: tabs.some(
             (tab) =>
               pendingStartupByTabId[tab.id] !== undefined ||
@@ -1033,7 +1044,7 @@ function Terminal(): React.JSX.Element | null {
         // walk on live panes per force-park episode.
         captureTerminalShutdownBuffersBestEffort(
           (tabsByWorktree[worktreeId] ?? [])
-            .filter((tab) => !isEvictionExemptTerminalTab(tab, worktreeId))
+            .filter((tab) => !tabIsEvictionExempt(worktreeId, tab))
             .map((tab) => tab.id),
           { includeLocalBuffers: false }
         )

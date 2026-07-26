@@ -9,18 +9,20 @@ import {
 } from './helpers/terminal'
 import { waitForTabParked } from './helpers/terminal-hidden-parking'
 import {
-  DOCKER_SSH_SECOND_HUB_REMOTE_REPO_PATH,
   cleanupDockerSshRelayTarget,
   startDockerSshRelayTarget,
   type DockerSshRelayTarget
 } from './helpers/docker-ssh-relay-target'
 import { connectDockerSshRelayTarget } from './helpers/docker-ssh-relay-connection'
-import { addDockerSshRelayRemoteWorktree } from './helpers/docker-ssh-relay-second-worktree'
+import { createAndActivateDockerSshRelayWorktree } from './helpers/docker-ssh-relay-worktree-activation'
 
 const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
 const PARKING_DELAY_MS = Number(process.env.ORCA_E2E_TERMINAL_PARKING_DELAY_MS) || 500
 
 test.use({
+  // Why no seeded local repo: matching every green Docker SSH spec — the same
+  // mid-session repo-add misroute hits a remote repo added beside a local one.
+  seedTestRepo: false,
   orcaAppExtraEnv: {
     ORCA_E2E_TERMINAL_PARKING_DELAY_MS: String(PARKING_DELAY_MS),
     // Why limit=1: two hidden un-parkable worktrees then exceed the budget while
@@ -44,14 +46,6 @@ test.describe('terminal hidden-worktree retention budget', () => {
     try {
       target = startDockerSshRelayTarget(testInfo)
       await waitForSessionReady(orcaPage)
-      // The seeded local repo is the third context both remote worktrees hide behind.
-      const localWorktreeId = await waitForActiveWorktree(orcaPage)
-
-      // Why: with SSH view parking off, SSH ptys are not park-restorable, so both
-      // remote worktrees join the un-parkable class the retention budget governs.
-      await orcaPage.evaluate(async () => {
-        await window.__store?.getState().updateSettings({ terminalSshViewParking: false })
-      })
 
       const older = await connectDockerSshRelayTarget(orcaPage, target)
       await expect
@@ -73,12 +67,23 @@ test.describe('terminal hidden-worktree retention budget', () => {
         })
         .toContain(`${olderMarker}:`)
 
-      // Second remote worktree on the same connection — activating it hides the
-      // older one, making the older the least-recently-hidden candidate.
-      const newer = await addDockerSshRelayRemoteWorktree(
+      // Why: with SSH view parking off, SSH ptys are not park-restorable, so the
+      // hidden remote worktrees join the un-parkable class the budget governs.
+      // Written after the first terminal is live so it cannot race target setup;
+      // parking eligibility reads it at verdict time, not spawn time.
+      await orcaPage.evaluate(async () => {
+        await window.__store?.getState().updateSettings({ terminalSshViewParking: false })
+      })
+
+      // Why worktrees of ONE remote repo: the retention budget ranks worktrees,
+      // and a repo added mid-session misroutes its pty spawn to the local daemon
+      // (pre-existing multi-repo issue, independent of retention).
+      // Activating the second worktree hides the older one, making the older the
+      // least-recently-hidden candidate.
+      const newer = await createAndActivateDockerSshRelayWorktree(
         orcaPage,
-        older.targetId,
-        DOCKER_SSH_SECOND_HUB_REMOTE_REPO_PATH
+        older.repoId,
+        'retention-newer'
       )
       await expect
         .poll(() => waitForActiveWorktree(orcaPage), { timeout: 30_000 })
@@ -90,11 +95,18 @@ test.describe('terminal hidden-worktree retention budget', () => {
         throw new Error('newer SSH terminal tab did not become active')
       }
 
-      // Hide both remote worktrees behind the local context: two hidden
-      // un-parkable worktrees against a budget of one.
-      await orcaPage.evaluate((worktreeId) => {
-        window.__store?.getState().setActiveWorktree(worktreeId)
-      }, localWorktreeId)
+      // Third context: activating it hides BOTH earlier worktrees — two hidden
+      // un-parkable worktrees against a budget of one. It stays visible, so it
+      // is never a retention candidate itself.
+      const third = await createAndActivateDockerSshRelayWorktree(
+        orcaPage,
+        older.repoId,
+        'retention-third'
+      )
+      await expect
+        .poll(() => waitForActiveWorktree(orcaPage), { timeout: 30_000 })
+        .toBe(third.worktreeId)
+      await waitForActiveTerminalManager(orcaPage, 60_000)
 
       // The older worktree must force-park (its pane managers unmount)…
       await waitForTabParked(orcaPage, olderTabId, { parkDelayMs: PARKING_DELAY_MS })

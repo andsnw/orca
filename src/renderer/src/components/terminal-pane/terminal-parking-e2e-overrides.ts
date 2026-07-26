@@ -10,11 +10,21 @@ import { getParkedTerminalWatcherTabIds } from './terminal-parked-tab-watchers'
 // in the hot-retain working set for 5 minutes and never park within a test
 // run. Gated on exposeStore so packaged builds ignore stray env vars.
 export function getTerminalParkingPolicyOverrides(): TerminalColdParkPolicyOverrides {
-  const delayMs = e2eConfig.exposeStore ? e2eConfig.terminalParkingDelayMs : null
-  return typeof delayMs === 'number' && Number.isFinite(delayMs) && delayMs > 0
-    ? // Why retentionTtlMs too: the retention-budget e2e needs its 45min TTL shrunk the same way.
-      { coldParkDelayMs: delayMs, hotRetainMs: delayMs, retentionTtlMs: delayMs }
-    : {}
+  if (!e2eConfig.exposeStore) {
+    return {}
+  }
+  const delayMs = e2eConfig.terminalParkingDelayMs
+  const retentionLimit = e2eConfig.terminalRetentionLimit
+  return {
+    ...(typeof delayMs === 'number' && Number.isFinite(delayMs) && delayMs > 0
+      ? // Why retentionTtlMs too: the retention-budget e2e needs its 45min TTL shrunk the same way.
+        { coldParkDelayMs: delayMs, hotRetainMs: delayMs, retentionTtlMs: delayMs }
+      : {}),
+    // Why: limit=1 lets a spec force-park with only two hidden un-parkable worktrees (production floor is 12).
+    ...(typeof retentionLimit === 'number' && Number.isInteger(retentionLimit) && retentionLimit > 0
+      ? { retentionLimit }
+      : {})
+  }
 }
 
 export function registerTerminalParkingDebugHandle(): void {

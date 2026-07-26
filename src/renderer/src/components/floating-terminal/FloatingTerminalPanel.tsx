@@ -269,6 +269,10 @@ export function FloatingTerminalPanel({
       : null
   )
   const pendingEditorCloseQueueRef = useRef<string[]>([])
+  // A dirty editor's close defers to the save dialog and completes asynchronously (Save closes from
+  // inside the editor), so park its emptying reclaim-arm check here and run it when the file
+  // actually leaves the panel — otherwise this content type silently skips the reclaim.
+  const pendingReclaimArmByFileIdRef = useRef<Map<string, () => void>>(new Map())
   const saveDialogFileIdRef = useRef<string | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   // Live imperative handles per floating terminal tab, so a double-tap-bound close (which L3's window
@@ -540,6 +544,8 @@ export function FloatingTerminalPanel({
 
   const handleFloatingSaveDialogCancel = useCallback(() => {
     pendingEditorCloseQueueRef.current = []
+    // Cancel drops the whole queue, so no queued file will close — discard their deferred arms too.
+    pendingReclaimArmByFileIdRef.current.clear()
     handleSaveDialogCancel()
   }, [handleSaveDialogCancel])
 
@@ -878,6 +884,7 @@ export function FloatingTerminalPanel({
           } else {
             const file = latest.openFiles.find((candidate) => candidate.id === item.entityId)
             if (file?.isDirty) {
+              pendingReclaimArmByFileIdRef.current.set(item.entityId, armIfEmptying)
               queueEditorCloseRequests([item.entityId])
               return
             }
@@ -1020,6 +1027,22 @@ export function FloatingTerminalPanel({
   const reportFloatingFocusFromTarget = useCallback((target: EventTarget | null): void => {
     reportFloatingFocus(target)
   }, [])
+
+  // Run a deferred dirty-editor arm check once the save dialog resolved and the file left the panel.
+  // Declared before the reclaim-consume effect below so the intent is armed in the same commit the
+  // count reaches 0; a cancelled dialog drops the entry instead (see the cancel handler).
+  useEffect(() => {
+    const pending = pendingReclaimArmByFileIdRef.current
+    if (pending.size === 0) {
+      return
+    }
+    for (const [fileId, armIfEmptying] of pending) {
+      if (!floatingFiles.some((file) => file.id === fileId)) {
+        pending.delete(fileId)
+        armIfEmptying()
+      }
+    }
+  }, [floatingFiles])
 
   // Reclaim keyboard ownership when the panel empties — but only if a panel-owned emptying close armed
   // the one-shot intent. Decoupling reclaim from *which* layer closed (L2/L3 keyboard, close button, or
@@ -1448,16 +1471,20 @@ export function FloatingTerminalPanel({
   }, [activateFloatingItem, closeFloatingItemConfirmed, open, visibleFloatingTabOrder])
 
   useEffect(() => {
+    const pendingReclaimArms = pendingReclaimArmByFileIdRef.current
     if (!open) {
       reportFloatingFocus(null, true)
       // Drop a stale emptying-close reclaim intent on panel close: if a concurrent tab-create kept
       // the panel from reaching 0, the count→0 consume never fired and the sticky intent must not
-      // survive to a later empty-panel mount and steal focus (F3 leak, defense-in-depth).
+      // survive to a later empty-panel mount and steal focus (F3 leak, defense-in-depth). Deferred
+      // dirty-editor arms are dropped for the same reason.
       clearFloatingPanelReclaimIntent()
+      pendingReclaimArms.clear()
     }
     return () => {
       reportFloatingFocus(null, true)
       clearFloatingPanelReclaimIntent()
+      pendingReclaimArms.clear()
     }
   }, [open])
 

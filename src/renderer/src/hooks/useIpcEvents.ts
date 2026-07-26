@@ -119,9 +119,9 @@ import {
   createFloatingWorkspaceBrowserTab,
   createFloatingWorkspaceMarkdownTab,
   createFloatingWorkspaceTerminalTab,
-  floatingWorkspaceBrowserTabExists,
   isEmptyFloatingWorkspacePanelVisible,
   isFloatingWorkspacePanelFocused,
+  resolveFloatingWorkspaceBrowserWorkspaceId,
   switchFloatingWorkspaceTab
 } from '@/lib/floating-workspace-terminal-actions'
 import {
@@ -2599,12 +2599,17 @@ export function useIpcEvents(): void {
 
     unsubs.push(
       window.api.ui.onCloseFloatingItem(({ sourceId }) => {
-        // Validate the forwarded source still names a live floating browser tab, then hand
-        // off to the mounted panel's own close closure (pin guard + reclaim intent). Stale id = no-op.
-        if (!floatingWorkspaceBrowserTabExists(useAppStore.getState(), sourceId)) {
+        // Main forwards the guest's browser *page* id; resolve it to the owning live floating
+        // browser workspace (the id space the panel closes by), then hand off to the mounted
+        // panel's own close closure (pin guard + reclaim intent). Stale id = no-op.
+        const workspaceId = resolveFloatingWorkspaceBrowserWorkspaceId(
+          useAppStore.getState(),
+          sourceId
+        )
+        if (!workspaceId) {
           return
         }
-        dispatchFloatingWorkspaceGuestClose({ sourceId })
+        dispatchFloatingWorkspaceGuestClose({ sourceId: workspaceId })
       })
     )
     unsubs.push(

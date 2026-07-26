@@ -2947,7 +2947,7 @@ describe('useIpcEvents browser tab close routing', () => {
     vi.resetModules()
     vi.unstubAllGlobals()
     // Undo a partial mock of this module leaked by an earlier describe so the real
-    // floatingWorkspaceBrowserTabExists (source validation) is used here.
+    // resolveFloatingWorkspaceBrowserWorkspaceId (source validation) is used here.
     vi.doUnmock('@/lib/floating-workspace-terminal-actions')
     closeTerminalTabMock.mockReset()
   })
@@ -4218,7 +4218,8 @@ describe('useIpcEvents browser tab close routing', () => {
     return dispatchEvent.map((call) => (call[0] as Event).type)
   }
 
-  it('re-dispatches a floating-guest close for a live floating browser source', async () => {
+  // Main forwards the guest's page id, so the receiver must resolve it to the owning workspace id.
+  it('re-dispatches a floating-guest close for a live floating browser page source', async () => {
     const closeFloatingItemListenerRef: { current: CloseFloatingItemListener | null } = {
       current: null
     }
@@ -4226,17 +4227,40 @@ describe('useIpcEvents browser tab close routing', () => {
     await useIpcEventsForCloseRouting({
       closeFloatingItemListenerRef,
       getState: () => ({
-        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'guest-1' }] }
+        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'workspace-1' }] },
+        browserPagesByWorkspace: { 'workspace-1': [{ id: 'page-1' }] }
       })
     })
 
-    closeFloatingItemListenerRef.current?.({ sourceId: 'guest-1' })
+    closeFloatingItemListenerRef.current?.({ sourceId: 'page-1' })
 
     const closeEvents = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
       .map((call) => call[0] as CustomEvent)
       .filter((event) => event.type === FLOATING_WORKSPACE_GUEST_CLOSE_EVENT)
     expect(closeEvents).toHaveLength(1)
-    expect(closeEvents[0].detail).toEqual({ sourceId: 'guest-1' })
+    expect(closeEvents[0].detail).toEqual({ sourceId: 'workspace-1' })
+  })
+
+  it('re-dispatches a floating-guest close for a live floating browser workspace source', async () => {
+    const closeFloatingItemListenerRef: { current: CloseFloatingItemListener | null } = {
+      current: null
+    }
+
+    await useIpcEventsForCloseRouting({
+      closeFloatingItemListenerRef,
+      getState: () => ({
+        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'workspace-1' }] },
+        browserPagesByWorkspace: { 'workspace-1': [{ id: 'page-1' }] }
+      })
+    })
+
+    closeFloatingItemListenerRef.current?.({ sourceId: 'workspace-1' })
+
+    const closeEvents = (window.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[0] as CustomEvent)
+      .filter((event) => event.type === FLOATING_WORKSPACE_GUEST_CLOSE_EVENT)
+    expect(closeEvents).toHaveLength(1)
+    expect(closeEvents[0].detail).toEqual({ sourceId: 'workspace-1' })
   })
 
   it('ignores a floating-guest close for a stale/unknown source (no-op)', async () => {
@@ -4247,7 +4271,8 @@ describe('useIpcEvents browser tab close routing', () => {
     await useIpcEventsForCloseRouting({
       closeFloatingItemListenerRef,
       getState: () => ({
-        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'guest-1' }] }
+        browserTabsByWorktree: { 'global-floating-terminal': [{ id: 'workspace-1' }] },
+        browserPagesByWorkspace: { 'workspace-1': [{ id: 'page-1' }] }
       })
     })
 

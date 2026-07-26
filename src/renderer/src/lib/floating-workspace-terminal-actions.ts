@@ -132,15 +132,26 @@ function getFloatingWorkspaceBrowserTab(
   )
 }
 
-// The guest IPC receiver validates a forwarded close's source id still belongs to a live
-// floating browser tab before acting, so a stale/reordered/closed id is an idempotent no-op.
-export function floatingWorkspaceBrowserTabExists(
-  store: Pick<AppState, 'browserTabsByWorktree'>,
-  browserTabId: string
-): boolean {
-  return (store.browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []).some(
-    (tab) => tab.id === browserTabId
-  )
+// The guest IPC receiver maps a forwarded close's source id back to the live floating browser
+// workspace that owns it, so a stale/reordered/closed id is an idempotent no-op. Main forwards the
+// guest's *page* id (BrowserManager keys guests by browserPageId), while the panel closes by
+// workspace id, so resolve pages → workspace here; a workspace id is accepted too for callers that
+// already speak that id space.
+export function resolveFloatingWorkspaceBrowserWorkspaceId(
+  store: Pick<AppState, 'browserTabsByWorktree' | 'browserPagesByWorkspace'>,
+  sourceId: string
+): string | null {
+  const workspaces = store.browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []
+  const pagesByWorkspace = store.browserPagesByWorkspace ?? {}
+  for (const workspace of workspaces) {
+    if (workspace.id === sourceId) {
+      return workspace.id
+    }
+    if ((pagesByWorkspace[workspace.id] ?? []).some((page) => page.id === sourceId)) {
+      return workspace.id
+    }
+  }
+  return null
 }
 
 function activateFloatingWorkspaceCyclableTab(

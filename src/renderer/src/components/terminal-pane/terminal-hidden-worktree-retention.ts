@@ -20,10 +20,10 @@ export const TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS = 45 * 60_000
 // Why: an eviction-exempt pty is a live local one a remount could not reattach
 // (daemon-fail-open separator-less ids, ptys minted under another worktree) — a
 // fresh spawn would orphan the live shell. Its TAB keeps its mounted pane when
-// the worktree force-parks (per-tab exclusion, mirroring Activity portals) and
-// relies on scrollback demotion instead. Per-PTY, not per-tab: the coverage
-// veto that makes a worktree a retention candidate walks every split pane, so
-// the exemption must too (see isEvictionExemptTerminalTab).
+// the worktree force-parks (per-tab exclusion, mirroring Activity portals).
+// Per-PTY, not per-tab: the coverage veto that makes a worktree a retention
+// candidate walks every split pane, so the exemption must too (see
+// isEvictionExemptTerminalTab).
 export function isEvictionExemptTerminalPty(
   ptyId: string | null | undefined,
   worktreeId: string
@@ -97,67 +97,4 @@ export function selectRetentionForceParkedTerminalWorktrees(
     hotRetainMs: args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
     hotRetainLimit: args.retentionLimit ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT
   })
-}
-
-/**
- * Scrollback demotion targets the hidden panes that stay mounted past the
- * retention deadlines: (a) eviction-exempt tabs' worktrees (their panes
- * survive force-park via the per-tab exclusion) demote past the TTL — or
- * immediately when their worktree force-parks under the count budget, since
- * the exempt panes are then the only ones left mounted; (b) un-parkable
- * worktrees the force-park lever spared (the last-active exemption, or slice
- * B switched off) demote past the TTL instead of holding full scrollback
- * forever. Time-monotone for fixed inputs: the force-parked and past-TTL sets
- * only ever grow with nowMs and the last-active pick is time-independent, so
- * membership only grows until a reveal resets hiddenSince — no oscillation
- * surface.
- *
- * Demotion is WORKTREE-scoped by design: one eviction-exempt leaf demotes
- * every still-mounted pane in the worktree, including parkable siblings a
- * mixed split tab keeps mounted (exemption is tab-granular). Coarser than
- * per-pane, deliberately — do not "fix" to per-pane demotion without
- * revisiting the retention-budget contract in the C1 PR body.
- */
-export function selectScrollbackDemotedTerminalWorktrees(
-  args: {
-    worktrees: readonly TerminalWorktreeRetentionCandidate[]
-    parkingEnabled: boolean
-    retentionBudgetEnabled: boolean
-    demotionEnabled: boolean
-    nowMs: number
-  } & TerminalColdParkPolicyOverrides
-): Set<string> {
-  // Why parkingEnabled still gates: it is the master kill switch — parking
-  // globally off means nothing parks OR demotes. Slice B's budget switch does
-  // not gate slice C; each slice reverts independently (approved contract).
-  if (!args.parkingEnabled || !args.demotionEnabled) {
-    return new Set()
-  }
-  const ttlMs = args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
-  const forceParked = selectRetentionForceParkedTerminalWorktrees(args)
-  const demoted = new Set<string>()
-  for (const worktree of args.worktrees) {
-    if (
-      worktree.hiddenSinceMs === null ||
-      worktree.isVisible ||
-      worktree.shouldMeasureHiddenWorktree ||
-      worktree.hasActivityTerminalPortal ||
-      worktree.hasPendingSpawnWork
-    ) {
-      continue
-    }
-    const pastTtl = args.nowMs - worktree.hiddenSinceMs >= ttlMs
-    if (worktree.hasEvictionExemptTab) {
-      if (pastTtl || forceParked.has(worktree.worktreeId)) {
-        demoted.add(worktree.worktreeId)
-      }
-      continue
-    }
-    // Force-park candidates the lever spared stay fully mounted, so demotion
-    // is their only bound; force-parked ones already unmounted.
-    if (!worktree.ordinaryParkingCovers && pastTtl && !forceParked.has(worktree.worktreeId)) {
-      demoted.add(worktree.worktreeId)
-    }
-  }
-  return demoted
 }

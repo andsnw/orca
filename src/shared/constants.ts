@@ -304,7 +304,6 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     // settings objects (which omit them) keep the default-on behavior.
     terminalSshViewParking: true,
     terminalHiddenWorktreeRetentionBudget: true,
-    terminalHiddenScrollbackDemotion: true,
     terminalMainSideEffectAuthority: true,
     terminalHiddenDeliveryGate: true,
     terminalModelQueryAuthority: true,

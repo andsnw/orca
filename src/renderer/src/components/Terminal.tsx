@@ -94,13 +94,8 @@ import {
 import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
   selectRetentionForceParkedTerminalWorktrees,
-  selectScrollbackDemotedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-pane/terminal-hidden-worktree-retention'
-import {
-  resetTerminalScrollbackDemotion,
-  setScrollbackDemotedTerminalWorktrees
-} from './terminal-pane/terminal-hidden-scrollback-demotion'
 import { captureTerminalShutdownBuffersBestEffort } from './terminal-pane/shutdown-buffer-captures'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
@@ -297,9 +292,6 @@ function Terminal(): React.JSX.Element | null {
   const terminalSshParkingEnabled = useAppStore((s) => s.settings?.terminalSshViewParking !== false)
   const terminalRetentionBudgetEnabled = useAppStore(
     (s) => s.settings?.terminalHiddenWorktreeRetentionBudget !== false
-  )
-  const terminalScrollbackDemotionEnabled = useAppStore(
-    (s) => s.settings?.terminalHiddenScrollbackDemotion !== false
   )
   const terminalTitleSnapshotAuthorityEnabled = useAppStore((s) =>
     isMainTerminalSideEffectAuthorityForPty({
@@ -1059,18 +1051,6 @@ function Terminal(): React.JSX.Element | null {
     setForceParkedTerminalWorktreeIds((current) =>
       haveSameWorktreeIds(current, forceParkedWorktreeIds) ? current : forceParkedWorktreeIds
     )
-    // C1 slice C: eviction-exempt worktrees stay mounted, so past the TTL their
-    // hidden panes demote to the minimum scrollback tier instead of unmounting.
-    setScrollbackDemotedTerminalWorktrees(
-      selectScrollbackDemotedTerminalWorktrees({
-        worktrees: retentionBudgetCandidates,
-        parkingEnabled: terminalParkingEnabled,
-        retentionBudgetEnabled: terminalRetentionBudgetEnabled,
-        demotionEnabled: terminalScrollbackDemotionEnabled,
-        nowMs,
-        ...overrides
-      })
-    )
     const retentionTtlEligibleIds = new Set(
       retentionBudgetCandidates
         .filter((candidate) => !candidate.ordinaryParkingCovers && !candidate.hasPendingSpawnWork)
@@ -1092,10 +1072,8 @@ function Terminal(): React.JSX.Element | null {
         parkCooldownUntilMs: candidate.parkCooldownUntilMs,
         nowMs,
         ...overrides,
-        // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary
-        // deadlines. Demotion (slice C) needs the wakeup too — it no longer requires slice B's switch.
-        ...((terminalRetentionBudgetEnabled || terminalScrollbackDemotionEnabled) &&
-        retentionTtlEligibleIds.has(candidate.worktreeId)
+        // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary deadlines.
+        ...(terminalRetentionBudgetEnabled && retentionTtlEligibleIds.has(candidate.worktreeId)
           ? {
               retentionTtlMs: overrides.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
             }
@@ -1120,7 +1098,6 @@ function Terminal(): React.JSX.Element | null {
     terminalParkingEnabled,
     terminalParkingRevision,
     terminalRetentionBudgetEnabled,
-    terminalScrollbackDemotionEnabled,
     terminalSshParkingEnabled,
     workspaceSurfaces
   ])
@@ -1358,14 +1335,8 @@ function Terminal(): React.JSX.Element | null {
     workspaceSessionReady,
     workspaceSurfaces
   ])
-  // Why: on host unmount no reconciliation effect runs again, so dispose every remaining parked watcher and drop the demotion verdicts nothing would recompute.
-  useEffect(
-    () => () => {
-      disposeAllParkedTerminalWatchers()
-      resetTerminalScrollbackDemotion()
-    },
-    []
-  )
+  // Why: on host unmount no reconciliation effect runs again, so dispose every remaining parked watcher.
+  useEffect(() => () => disposeAllParkedTerminalWatchers(), [])
   // Auto-create first tab when worktree activates
   useEffect(() => {
     if (!workspaceSessionReady) {

@@ -17984,6 +17984,9 @@ describe('connectPanePty', () => {
     await flushAsyncTicks(20)
 
     expect(writes).toContain('relay-fallback-output')
+    // Why: a stalled reveal must cost exactly one bounded probe — a re-probe
+    // would buy a second timeout window before the relay paint.
+    expect(window.api.pty.getMainBufferSnapshot).toHaveBeenCalledTimes(1)
   })
 
   it('does not auto-reconnect after a user cancels deferred SSH passphrase auth', async () => {

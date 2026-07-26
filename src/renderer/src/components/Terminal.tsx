@@ -84,9 +84,10 @@ import {
 import { buildDuplicatedBrowserTabOptions } from '@/lib/duplicate-browser-tab-options'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { setForegroundTerminalTabIds } from '@/lib/foreground-terminal-tabs'
+import { getTerminalWorktreeColdParkRecheckDelayMs } from './terminal-pane/terminal-cold-park-recheck-deadlines'
 import {
+  TERMINAL_WORKTREE_COLD_PARK_DELAY_MS,
   canParkTerminalWorktreeRenderers,
-  getTerminalWorktreeColdParkRecheckDelayMs,
   selectColdParkedTerminalWorktrees,
   type TerminalWorktreeColdParkCandidate
 } from './terminal-pane/terminal-hidden-view-parking'
@@ -100,7 +101,7 @@ import {
   resetTerminalScrollbackDemotion,
   setScrollbackDemotedTerminalWorktrees
 } from './terminal-pane/terminal-hidden-scrollback-demotion'
-import { shutdownBufferCaptures } from './terminal-pane/shutdown-buffer-captures'
+import { captureTerminalShutdownBuffersBestEffort } from './terminal-pane/shutdown-buffer-captures'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
 import {
@@ -265,6 +266,12 @@ function Terminal(): React.JSX.Element | null {
   const mountedWorktreeIdsRef = useRef(new Set<string>())
   const measurableBackgroundWorktreeIdsRef = useRef(new Set<string>())
   const terminalWorktreeHiddenSinceRef = useRef(new Map<string, number>())
+  // Why two extra clocks: hiddenSince survives a background-measure window (so
+  // TTL/ranking stay honest), but re-park must wait a full coldParkDelayMs
+  // after the measure ends — otherwise every ~3s measure lease on a
+  // past-deadline worktree thrashes remount/reattach with an immediate re-park.
+  const measuringTerminalWorktreeIdsRef = useRef(new Set<string>())
+  const terminalWorktreeParkCooldownUntilRef = useRef(new Map<string, number>())
   const terminalWorktreeParkingTimersRef = useRef(new Map<string, number>())
   const allWorktrees = useAllWorktrees()
   const folderWorkspaces = useAppStore((s) => s.folderWorkspaces)
@@ -869,6 +876,8 @@ function Terminal(): React.JSX.Element | null {
     for (const worktreeId of Array.from(terminalWorktreeHiddenSinceRef.current.keys())) {
       if (!currentWorktreeIds.has(worktreeId) || !mountedWorktreeIdsRef.current.has(worktreeId)) {
         terminalWorktreeHiddenSinceRef.current.delete(worktreeId)
+        measuringTerminalWorktreeIdsRef.current.delete(worktreeId)
+        terminalWorktreeParkCooldownUntilRef.current.delete(worktreeId)
       }
     }
 
@@ -877,14 +886,33 @@ function Terminal(): React.JSX.Element | null {
       const worktreeId = workspace.id
       if (!mountedWorktreeIdsRef.current.has(worktreeId)) {
         terminalWorktreeHiddenSinceRef.current.delete(worktreeId)
+        measuringTerminalWorktreeIdsRef.current.delete(worktreeId)
+        terminalWorktreeParkCooldownUntilRef.current.delete(worktreeId)
         continue
       }
       const isVisible = activeView === 'terminal' && renderedActiveWorktreeId === worktreeId
       const shouldMeasureHiddenWorktree =
         !isVisible && measurableBackgroundWorktreeIdsRef.current.has(worktreeId)
       const hasActivityTerminalPortal = portalWorktreeIds.has(worktreeId)
+      // Why the cool-down: hiddenSince deliberately survives the measure (see
+      // below), so a past-deadline worktree would otherwise re-park in the
+      // same pass the measure lease ends — remount/reattach thrash on every
+      // periodic probe. The cool-down re-grants the coldParkDelayMs hysteresis
+      // without touching the TTL/ranking clock.
+      if (shouldMeasureHiddenWorktree) {
+        measuringTerminalWorktreeIdsRef.current.add(worktreeId)
+      } else {
+        if (measuringTerminalWorktreeIdsRef.current.has(worktreeId)) {
+          terminalWorktreeParkCooldownUntilRef.current.set(
+            worktreeId,
+            nowMs + (overrides.coldParkDelayMs ?? TERMINAL_WORKTREE_COLD_PARK_DELAY_MS)
+          )
+        }
+        measuringTerminalWorktreeIdsRef.current.delete(worktreeId)
+      }
       if (isVisible || hasActivityTerminalPortal) {
         terminalWorktreeHiddenSinceRef.current.delete(worktreeId)
+        terminalWorktreeParkCooldownUntilRef.current.delete(worktreeId)
       } else if (!shouldMeasureHiddenWorktree) {
         // Why measuring is excluded here but still pauses the verdicts below:
         // the ~3s background-measure window (automation lease, mobile mount,
@@ -902,7 +930,8 @@ function Terminal(): React.JSX.Element | null {
         isVisible,
         shouldMeasureHiddenWorktree,
         hasActivityTerminalPortal,
-        hiddenSinceMs: terminalWorktreeHiddenSinceRef.current.get(worktreeId) ?? null
+        hiddenSinceMs: terminalWorktreeHiddenSinceRef.current.get(worktreeId) ?? null,
+        parkCooldownUntilMs: terminalWorktreeParkCooldownUntilRef.current.get(worktreeId) ?? null
       })
     }
 
@@ -944,6 +973,11 @@ function Terminal(): React.JSX.Element | null {
         const tabs = tabsByWorktree[candidate.worktreeId] ?? []
         const parkEligible = canParkTerminalWorktreeRenderers({
           ...candidate,
+          // Why nulled: the post-measure cool-down is a timing gate, not a
+          // coverage change — ordinary parking still covers this worktree, it
+          // just may not re-engage yet. Leaving it set would misclassify the
+          // worktree as a retention candidate for the cool-down window.
+          parkCooldownUntilMs: null,
           pendingStartupByTabId,
           parkingEnabled: terminalParkingEnabled,
           nowMs,
@@ -958,6 +992,7 @@ function Terminal(): React.JSX.Element | null {
           isVisible: candidate.isVisible,
           shouldMeasureHiddenWorktree: candidate.shouldMeasureHiddenWorktree,
           hasActivityTerminalPortal: candidate.hasActivityTerminalPortal,
+          parkCooldownUntilMs: candidate.parkCooldownUntilMs,
           ordinaryParkingCovers:
             parkEligible && worktreeTabsAreWatcherCovered(candidate.worktreeId, tabs),
           hasEvictionExemptTab: tabs.some((tab) =>
@@ -993,9 +1028,15 @@ function Terminal(): React.JSX.Element | null {
         // content. includeLocalBuffers:false is required here, not optional — a
         // heap fix must not plant 512KB/pane of scrollback strings in the store
         // for local worktrees that already have the daemon snapshot.
-        for (const tab of tabsByWorktree[worktreeId] ?? []) {
-          shutdownBufferCaptures.get(tab.id)?.({ includeLocalBuffers: false })
-        }
+        // Eviction-exempt tabs never unmount (per-tab exclusion), so they need
+        // no pre-unmount capture — skipping spares a serialize+setTabLayout
+        // walk on live panes per force-park episode.
+        captureTerminalShutdownBuffersBestEffort(
+          (tabsByWorktree[worktreeId] ?? [])
+            .filter((tab) => !isEvictionExemptTerminalTab(tab, worktreeId))
+            .map((tab) => tab.id),
+          { includeLocalBuffers: false }
+        )
       }
       nextParkedTerminalWorktreeIds.add(worktreeId)
     }
@@ -1037,6 +1078,7 @@ function Terminal(): React.JSX.Element | null {
       const delayMs = getTerminalWorktreeColdParkRecheckDelayMs({
         parkingEnabled: terminalParkingEnabled,
         hiddenSinceMs: candidate.hiddenSinceMs,
+        parkCooldownUntilMs: candidate.parkCooldownUntilMs,
         nowMs,
         ...overrides,
         // Why: only retention candidates wake at the eviction TTL; everyone else keeps the ordinary

@@ -19,7 +19,10 @@ import { connectDockerSshRelayTarget } from './helpers/docker-ssh-relay-connecti
 const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
 const PARKING_DELAY_MS = Number(process.env.ORCA_E2E_TERMINAL_PARKING_DELAY_MS) || 500
 
-test.use({ seedTestRepo: false })
+test.use({
+  seedTestRepo: false,
+  orcaAppExtraEnv: { ORCA_E2E_TERMINAL_PARKING_DELAY_MS: String(PARKING_DELAY_MS) }
+})
 
 // C1 slice A: SSH tabs park like local ones and reveal restores content from
 // main's headless model (relay replay is the fallback). This is the SSH

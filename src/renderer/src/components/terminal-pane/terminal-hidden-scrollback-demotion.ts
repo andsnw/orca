@@ -57,3 +57,16 @@ export function useTerminalWorktreeScrollbackDemoted(worktreeId: string): boolea
 export function demotedTerminalScrollbackRows(configuredRows: number): number {
   return Math.min(TERMINAL_DEMOTED_SCROLLBACK_ROWS, configuredRows)
 }
+
+/** Scrollback for a NEW xterm in this worktree. Pane births under an
+ *  already-demoted worktree (splits, layout replays) must take the demoted
+ *  tier at create — the post-mount demotion effect only re-runs when the
+ *  verdict or setting flips, so it never covers them. */
+export function resolveTerminalMountScrollbackRows(
+  worktreeId: string,
+  configuredRows: number
+): number {
+  return demotedWorktreeIds.has(worktreeId)
+    ? demotedTerminalScrollbackRows(configuredRows)
+    : configuredRows
+}

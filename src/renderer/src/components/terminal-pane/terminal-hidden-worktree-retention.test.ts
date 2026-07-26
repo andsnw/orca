@@ -104,6 +104,31 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
     expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees })).toEqual(new Set())
   })
 
+  // Why: hiddenSince (and with it TTL ranking) survives a measure window, so
+  // without the cool-down veto a measured past-TTL worktree would force-park
+  // again the instant the lease ends — the remount/reattach thrash Bug #2.
+  it('holds a candidate out of force-park until its post-measure cool-down ends', () => {
+    const aged = nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+    // Why the recent sibling: it takes the last-active exemption, so the aged
+    // candidate's verdict is decided by the cool-down alone.
+    const recent = retentionCandidate('wt-recent', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS)
+    expect(
+      selectRetentionForceParkedTerminalWorktrees({
+        ...base,
+        worktrees: [
+          retentionCandidate('wt-measured', aged, { parkCooldownUntilMs: nowMs + 1 }),
+          recent
+        ]
+      })
+    ).toEqual(new Set())
+    expect(
+      selectRetentionForceParkedTerminalWorktrees({
+        ...base,
+        worktrees: [retentionCandidate('wt-measured', aged, { parkCooldownUntilMs: nowMs }), recent]
+      })
+    ).toEqual(new Set(['wt-measured']))
+  })
+
   it('force-parks worktrees with eviction-exempt tabs (the tabs, not the worktree, are exempt)', () => {
     // Why: one exempt tab must not pin co-located un-parkable tabs forever;
     // the exempt tabs' panes survive via the per-tab exclusion instead.

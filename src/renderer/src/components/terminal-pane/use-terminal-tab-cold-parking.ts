@@ -13,8 +13,9 @@ import {
   findActivityTerminalPortal,
   type ActivityTerminalPortalTarget
 } from '../activity/activity-terminal-portal'
+import { getTerminalTabColdParkRecheckDelayMs } from './terminal-cold-park-recheck-deadlines'
 import {
-  getTerminalTabColdParkRecheckDelayMs,
+  TERMINAL_TAB_COLD_PARK_DELAY_MS,
   selectColdParkedTerminalTabs,
   type TerminalTabColdParkCandidate
 } from './terminal-hidden-view-parking'
@@ -88,6 +89,12 @@ export function useTerminalTabColdParking(args: {
     (state) => state.settings?.terminalSshViewParking !== false
   )
   const terminalTabHiddenSinceRef = useRef(new Map<string, number>())
+  // Why (shared measure-clock contract with Terminal.tsx): tab hiddenSince
+  // survives a background-measure window so per-tab park deadlines stay in
+  // sync with the worktree retention/TTL clock, and a post-measure cool-down
+  // re-grants the hysteresis so measure end can't immediately re-park.
+  const wasMeasuringHiddenWorktreeRef = useRef(false)
+  const measureParkCooldownUntilRef = useRef<number | null>(null)
   const terminalTabParkingTimersRef = useRef(new Map<string, number>())
   const parkVerdictRecordsRef = useRef(new Map<string, ParkVerdictFlipRecord>())
   const [terminalTabParkingRevision, setTerminalTabParkingRevision] = useState(0)
@@ -129,15 +136,33 @@ export function useTerminalTabColdParking(args: {
       }
     }
 
+    // Why: measure end starts the re-park cool-down (worktree measure-clock
+    // contract) — hiddenSince is preserved through the window, so without the
+    // cool-down every past-deadline tab would re-park the instant it closes.
+    if (shouldMeasureHiddenWorktree) {
+      wasMeasuringHiddenWorktreeRef.current = true
+    } else {
+      if (wasMeasuringHiddenWorktreeRef.current) {
+        measureParkCooldownUntilRef.current =
+          nowMs + (overrides.coldParkDelayMs ?? TERMINAL_TAB_COLD_PARK_DELAY_MS)
+      }
+      wasMeasuringHiddenWorktreeRef.current = false
+    }
+
     const candidates: TerminalTabColdParkCandidate[] = terminalTabs.map((terminalTab) => {
       const assignment = assignments.get(terminalTab.id)
       const isVisible = Boolean(isWorktreeActive && assignment && assignment.isActiveInGroup)
       const hasActivityTerminalPortal = portalTabIds.has(terminalTab.id)
-      // Why: hidden-measuring counts as visibility — the startup probe needs
-      // mounted panes, so the hidden clock must not run during it.
-      if (isVisible || hasActivityTerminalPortal || shouldMeasureHiddenWorktree) {
+      // Why measuring preserves the clock: the startup probe still needs
+      // mounted panes (selection + render veto below), but deleting
+      // hiddenSince would restart the hysteresis AND desync per-tab deadlines
+      // from the worktree retention/TTL clock on every ~3s probe.
+      if (isVisible || hasActivityTerminalPortal) {
         terminalTabHiddenSinceRef.current.delete(terminalTab.id)
-      } else if (!terminalTabHiddenSinceRef.current.has(terminalTab.id)) {
+      } else if (
+        !shouldMeasureHiddenWorktree &&
+        !terminalTabHiddenSinceRef.current.has(terminalTab.id)
+      ) {
         terminalTabHiddenSinceRef.current.set(terminalTab.id, nowMs)
       }
       return {
@@ -156,6 +181,7 @@ export function useTerminalTabColdParking(args: {
       pendingStartupByTabId,
       parkingEnabled: terminalParkingEnabled,
       nowMs,
+      parkCooldownUntilMs: measureParkCooldownUntilRef.current,
       restorePolicy: { sshParkingEnabled: terminalSshParkingEnabled },
       ...overrides
     })
@@ -187,6 +213,7 @@ export function useTerminalTabColdParking(args: {
       const delayMs = getTerminalTabColdParkRecheckDelayMs({
         parkingEnabled: terminalParkingEnabled,
         hiddenSinceMs: candidate.hiddenSinceMs,
+        parkCooldownUntilMs: measureParkCooldownUntilRef.current,
         nowMs,
         ...overrides
       })

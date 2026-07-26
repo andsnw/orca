@@ -9,8 +9,6 @@ import {
   TERMINAL_WORKTREE_PARK_DELAY_MS,
   canParkTerminalTabRenderer,
   canParkTerminalWorktreeRenderers,
-  getTerminalTabColdParkRecheckDelayMs,
-  getTerminalWorktreeColdParkRecheckDelayMs,
   isParkRestorableTerminalPty,
   isSnapshotBackedTerminalPty,
   selectColdParkedTerminalTabs,
@@ -169,6 +167,17 @@ describe('canParkTerminalWorktreeRenderers', () => {
     ).toBe(true)
   })
 
+  // Why: hiddenSince survives a background-measure window, so a past-deadline
+  // worktree would otherwise re-park the instant the measure lease ends —
+  // remount/reattach thrash on every ~3s periodic probe.
+  it('holds an otherwise past-deadline candidate out of park until the measure cool-down ends', () => {
+    expect(canParkTerminalWorktreeRenderers({ ...base, parkCooldownUntilMs: nowMs + 1 })).toBe(
+      false
+    )
+    expect(canParkTerminalWorktreeRenderers({ ...base, parkCooldownUntilMs: nowMs })).toBe(true)
+    expect(canParkTerminalWorktreeRenderers({ ...base, parkCooldownUntilMs: null })).toBe(true)
+  })
+
   it('keeps the renderer mounted when any terminal lacks snapshot-backed restore', () => {
     expect(
       canParkTerminalWorktreeRenderers({
@@ -235,6 +244,11 @@ describe('canParkTerminalTabRenderer', () => {
     expect(
       canParkTerminalTabRenderer({ ...base, coldParkDelayMs: 100, nowMs: hiddenSinceMs + 100 })
     ).toBe(true)
+  })
+
+  it('holds an otherwise past-deadline tab out of park until the measure cool-down ends', () => {
+    expect(canParkTerminalTabRenderer({ ...base, parkCooldownUntilMs: base.nowMs + 1 })).toBe(false)
+    expect(canParkTerminalTabRenderer({ ...base, parkCooldownUntilMs: base.nowMs })).toBe(true)
   })
 })
 
@@ -456,6 +470,29 @@ describe('selectColdParkedTerminalTabs', () => {
     expect(selected).toEqual(new Set(['tab-3']))
   })
 
+  // Why worktree-scoped: measure windows mount every tab of the worktree, so
+  // one cool-down (not per-tab clocks) delays re-park after the lease ends.
+  it('selects nothing while the post-measure cool-down is active', () => {
+    const args = {
+      worktreeId: 'wt-1',
+      terminalTabs: [
+        localTab('tab-1', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS),
+        localTab('tab-2', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS - 1),
+        localTab('tab-3', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS - 2)
+      ],
+      pendingStartupByTabId: {},
+      parkingEnabled: true,
+      nowMs,
+      hotRetainLimit: 2
+    }
+    expect(selectColdParkedTerminalTabs({ ...args, parkCooldownUntilMs: nowMs + 1 })).toEqual(
+      new Set()
+    )
+    expect(selectColdParkedTerminalTabs({ ...args, parkCooldownUntilMs: nowMs })).toEqual(
+      new Set(['tab-3'])
+    )
+  })
+
   it('cold-parks aged inactive local tabs even when under the retain limit', () => {
     const selected = selectColdParkedTerminalTabs({
       worktreeId: 'wt-1',
@@ -550,133 +587,5 @@ describe('selectColdParkedTerminalTabs', () => {
     })
 
     expect(selected).toEqual(new Set())
-  })
-})
-
-describe('getTerminalWorktreeColdParkRecheckDelayMs', () => {
-  it('returns the next cold-park policy deadline', () => {
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: null,
-        nowMs: 1_000,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_050,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBe(50)
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_100,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBe(900)
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 2_000,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-  })
-
-  it('schedules no recheck when the settings kill switch disables parking', () => {
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: false,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_050,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-  })
-
-  it('wakes at the retention TTL for budget candidates past the ordinary deadlines', () => {
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 2_500,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000,
-        retentionTtlMs: 5_000
-      })
-    ).toBe(3_500)
-    expect(
-      getTerminalWorktreeColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 2_500,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-  })
-})
-
-describe('getTerminalTabColdParkRecheckDelayMs', () => {
-  it('returns the next terminal-tab cold-park policy deadline', () => {
-    expect(
-      getTerminalTabColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: null,
-        nowMs: 1_000,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-    expect(
-      getTerminalTabColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_050,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBe(50)
-    expect(
-      getTerminalTabColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_100,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBe(900)
-    expect(
-      getTerminalTabColdParkRecheckDelayMs({
-        parkingEnabled: true,
-        hiddenSinceMs: 1_000,
-        nowMs: 2_000,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
-  })
-
-  it('schedules no recheck when the settings kill switch disables parking', () => {
-    expect(
-      getTerminalTabColdParkRecheckDelayMs({
-        parkingEnabled: false,
-        hiddenSinceMs: 1_000,
-        nowMs: 1_050,
-        coldParkDelayMs: 100,
-        hotRetainMs: 1_000
-      })
-    ).toBeNull()
   })
 })

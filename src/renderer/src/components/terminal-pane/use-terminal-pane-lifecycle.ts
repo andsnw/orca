@@ -17,6 +17,7 @@ import {
 import { normalizeDesktopTerminalScrollbackRows } from '../../../../shared/terminal-scrollback-policy'
 import {
   demotedTerminalScrollbackRows,
+  resolveTerminalMountScrollbackRows,
   useTerminalWorktreeScrollbackDemoted
 } from './terminal-hidden-scrollback-demotion'
 import {
@@ -1380,8 +1381,12 @@ export function useTerminalPaneLifecycle({
           fontFamily: buildFontFamily(currentSettings?.terminalFontFamily ?? ''),
           fontWeight: terminalFontWeights.fontWeight,
           fontWeightBold: terminalFontWeights.fontWeightBold,
-          scrollback: normalizeDesktopTerminalScrollbackRows(
-            currentSettings?.terminalScrollbackRows
+          // Why resolveTerminalMountScrollbackRows: pane births while the
+          // worktree is already demoted (C1 slice C) must not resurrect the
+          // full tier — the post-mount demotion effect doesn't re-run for them.
+          scrollback: resolveTerminalMountScrollbackRows(
+            worktreeId,
+            normalizeDesktopTerminalScrollbackRows(currentSettings?.terminalScrollbackRows)
           ),
           cursorStyle,
           cursorInactiveStyle: resolveTerminalCursorInactiveStyle(cursorStyle),

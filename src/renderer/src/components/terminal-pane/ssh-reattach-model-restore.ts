@@ -9,6 +9,29 @@ export type SshReattachModelSnapshot = {
   pendingEscapeTailAnsi?: string
 }
 
+// Why: relay replay is already available during reattach; a stalled model
+// probe must not strand that fallback or hold live PTY bytes indefinitely.
+export const SSH_REATTACH_MODEL_SNAPSHOT_TIMEOUT_MS = 750
+
+export async function resolveSshReattachModelSnapshotWithTimeout<T>(
+  snapshot: Promise<T>,
+  timeoutMs = SSH_REATTACH_MODEL_SNAPSHOT_TIMEOUT_MS
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      snapshot.catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 /**
  * Which payload paints an SSH reattach (C1 SSH-parking design gate). Only
  * main's headless model is trusted: a 'renderer'-sourced snapshot serializes a

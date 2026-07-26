@@ -40,6 +40,10 @@ export type TerminalWorktreeRetentionCandidate = {
   isVisible: boolean
   shouldMeasureHiddenWorktree: boolean
   hasActivityTerminalPortal: boolean
+  /** Post-measure cool-down (see TerminalWorktreeColdParkCandidate): force-park
+   *  must not re-engage right after a measure window ends, but hiddenSince —
+   *  and with it the TTL/ranking clock — stays untouched. */
+  parkCooldownUntilMs?: number | null
   /** Ordinary cold parking can evict this worktree (park-eligible AND watcher-coverable) — the warm cap bounds it already. */
   ordinaryParkingCovers: boolean
   /** See isEvictionExemptTerminalTab. */
@@ -81,6 +85,7 @@ export function selectRetentionForceParkedTerminalWorktrees(
       worktree.hasActivityTerminalPortal ||
       worktree.ordinaryParkingCovers ||
       worktree.hasPendingSpawnWork ||
+      (worktree.parkCooldownUntilMs != null && args.nowMs < worktree.parkCooldownUntilMs) ||
       args.nowMs - worktree.hiddenSinceMs < coldParkDelayMs
     ) {
       continue
@@ -106,6 +111,12 @@ export function selectRetentionForceParkedTerminalWorktrees(
  * only ever grow with nowMs and the last-active pick is time-independent, so
  * membership only grows until a reveal resets hiddenSince — no oscillation
  * surface.
+ *
+ * Demotion is WORKTREE-scoped by design: one eviction-exempt leaf demotes
+ * every still-mounted pane in the worktree, including parkable siblings a
+ * mixed split tab keeps mounted (exemption is tab-granular). Coarser than
+ * per-pane, deliberately — do not "fix" to per-pane demotion without
+ * revisiting the retention-budget contract in the C1 PR body.
  */
 export function selectScrollbackDemotedTerminalWorktrees(
   args: {

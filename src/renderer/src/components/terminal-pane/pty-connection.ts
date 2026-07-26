@@ -238,7 +238,13 @@ import {
 } from './hidden-output-restore-scheduler'
 import { resolveHiddenRestoreScrollbackRows } from './terminal-hidden-restore-scrollback'
 import {
+  buildMainModelSnapshotReplayWrites,
+  hasPositiveTerminalDimensions,
+  resolvePositiveTerminalDimensions
+} from './terminal-snapshot-replay-paint'
+import {
   decideSshReattachPaintSource,
+  resolveSshReattachModelSnapshotWithTimeout,
   shouldFetchSshReattachModelSnapshot
 } from './ssh-reattach-model-restore'
 import {
@@ -6634,11 +6640,7 @@ export function connectPanePty(
       hiddenOutputSnapshotScrollRestore = scrollRestore
       const colsBeforeReplay = pane.terminal.cols
       const rowsBeforeReplay = pane.terminal.rows
-      const hasSnapshotDimensions =
-        Number.isFinite(snapshot.cols) &&
-        Number.isFinite(snapshot.rows) &&
-        snapshot.cols > 0 &&
-        snapshot.rows > 0
+      const hasSnapshotDimensions = hasPositiveTerminalDimensions(snapshot.cols, snapshot.rows)
       try {
         await structuralReplayCoordinator.run(
           async () => {
@@ -6672,19 +6674,12 @@ export function connectPanePty(
                 suppressStructuralReplayPtyResize = false
               }
             }
-            if (!snapshot.alternateScreen) {
-              // Why: \x1b[3J wipes xterm scrollback; alt-screen TUIs keep it in xterm, so clear only the normal buffer (mirrors pty-transport.ts).
-              writeReplayData('\x1b[2J\x1b[3J\x1b[H')
-            } else if (snapshot.scrollbackAnsi !== undefined) {
-              // Why: SerializeAddon captures normal + alt buffers together; rebuild normal while active, then return to a clean alt frame.
-              writeReplayData('\x1b[?1049l\x1b[2J\x1b[3J\x1b[H')
-              writeReplayData(snapshot.scrollbackAnsi)
-              writeReplayData('\x1b[0m\x1b[?1049h\x1b[2J\x1b[H')
-            } else {
-              // Why: the snapshot's ?1049h no-ops when already on alt screen and skips blank cells; clear the alt buffer so the pre-hide frame can't bleed through blank cells (spares normal-buffer scrollback).
-              writeReplayData('\x1b[0m\x1b[?1049h\x1b[2J\x1b[H')
+            // Why shared: the SSH reattach model paint inlines the same
+            // choreography (coordinator nesting would deadlock there); one
+            // builder keeps the alt-screen branches from drifting.
+            for (const replayChunk of buildMainModelSnapshotReplayWrites(snapshot)) {
+              writeReplayData(replayChunk)
             }
-            writeReplayData(snapshot.data)
             // Why: live agents own ?25l/?1004h; a forced ?1004l here would silence focus events until restart (agents enable focus reporting only at startup).
             writeReplayData(
               hasLiveAgentReattachStatusOrTitleSignal()
@@ -7394,11 +7389,11 @@ export function connectPanePty(
         if (!shouldFetchSshReattachModelSnapshot({ ptyId, sshParkingEnabled })) {
           return null
         }
-        const snapshot = await window.api.pty
-          .getMainBufferSnapshot(ptyId, {
+        const snapshot = await resolveSshReattachModelSnapshotWithTimeout(
+          window.api.pty.getMainBufferSnapshot(ptyId, {
             scrollbackRows: resolveHiddenRestoreScrollbackRows(pane.terminal.options.scrollback)
           })
-          .catch(() => null)
+        )
         if (
           !snapshot ||
           decideSshReattachPaintSource({ ptyId, sshParkingEnabled, snapshot }) !==
@@ -7427,22 +7422,18 @@ export function connectPanePty(
         if (connectResult?.snapshot) {
           rememberReattachPayloadAgentSignal(connectResult.snapshot, { fullScreenReplay: true })
           // Why: replay at the snapshot's own dimensions to avoid rewrapping soft-wrapped rows at a different column count (#7279); suppress the PTY forward so this layout-only resize doesn't SIGWINCH the remote TUI.
-          const snapshotCols = connectResult.snapshotCols
-          const snapshotRows = connectResult.snapshotRows
-          const hasSnapshotDimensions =
-            typeof snapshotCols === 'number' &&
-            typeof snapshotRows === 'number' &&
-            Number.isFinite(snapshotCols) &&
-            Number.isFinite(snapshotRows) &&
-            snapshotCols > 0 &&
-            snapshotRows > 0
+          const snapshotDimensions = resolvePositiveTerminalDimensions(
+            connectResult.snapshotCols,
+            connectResult.snapshotRows
+          )
           if (
-            hasSnapshotDimensions &&
-            (pane.terminal.cols !== snapshotCols || pane.terminal.rows !== snapshotRows)
+            snapshotDimensions &&
+            (pane.terminal.cols !== snapshotDimensions.cols ||
+              pane.terminal.rows !== snapshotDimensions.rows)
           ) {
             suppressStructuralReplayPtyResize = true
             try {
-              pane.terminal.resize(snapshotCols, snapshotRows)
+              pane.terminal.resize(snapshotDimensions.cols, snapshotDimensions.rows)
             } finally {
               suppressStructuralReplayPtyResize = false
             }
@@ -7471,16 +7462,16 @@ export function connectPanePty(
             return
           }
           if (modelSnapshot) {
-            // Why folded: main returns scrollbackAnsi separately; the daemon
-            // adapter composes scrollback + rehydrate + screen into one payload
-            // and this paint mirrors that composition on a fresh xterm.
+            // Why composed for scan/reset only: kitty + reset heuristics need
+            // the full byte stream; the actual writes go through the shared
+            // alt-screen choreography below (scrollbackAnsi is '' for
+            // normal-buffer snapshots, so composition matches data there).
             const modelData = `${modelSnapshot.scrollbackAnsi ?? ''}${modelSnapshot.data}`
             rememberReattachPayloadAgentSignal(modelData, { fullScreenReplay: true })
             const modelCols = modelSnapshot.cols
             const modelRows = modelSnapshot.rows
             if (
-              modelCols > 0 &&
-              modelRows > 0 &&
+              hasPositiveTerminalDimensions(modelCols, modelRows) &&
               (pane.terminal.cols !== modelCols || pane.terminal.rows !== modelRows)
             ) {
               // Why: replay at the snapshot's own dimensions (see the daemon-snapshot branch, #7279).
@@ -7491,9 +7482,14 @@ export function connectPanePty(
                 suppressStructuralReplayPtyResize = false
               }
             }
-            writeReplayData('\x1b[2J\x1b[3J\x1b[H')
             kittyKeyboardModes.scanReplay(modelData)
-            writeReplayData(modelData)
+            // Why shared: park+reveal of an alt-screen TUI needs the same
+            // ?1049l/?1049h rebuild as applyMainBufferSnapshot (main strips
+            // the ?1049h marker when splitting scrollbackAnsi) — inlined here
+            // because nesting structuralReplayCoordinator would deadlock.
+            for (const replayChunk of buildMainModelSnapshotReplayWrites(modelSnapshot)) {
+              writeReplayData(replayChunk)
+            }
             writeReplayData(reattachReplayResetSequence(modelData))
             if (modelSnapshot.pendingEscapeTailAnsi) {
               // Why last: re-arm the dangling mid-escape after the reset so the live continuation completes it (#7329).
@@ -7541,23 +7537,19 @@ export function connectPanePty(
           if (!isCurrentReattachPayload()) {
             return
           }
-          const coldRestoreCols = connectResult.coldRestore.cols
-          const coldRestoreRows = connectResult.coldRestore.rows
-          const hasColdRestoreDimensions =
-            typeof coldRestoreCols === 'number' &&
-            typeof coldRestoreRows === 'number' &&
-            Number.isFinite(coldRestoreCols) &&
-            Number.isFinite(coldRestoreRows) &&
-            coldRestoreCols > 0 &&
-            coldRestoreRows > 0
+          const coldRestoreDimensions = resolvePositiveTerminalDimensions(
+            connectResult.coldRestore.cols,
+            connectResult.coldRestore.rows
+          )
           if (
-            hasColdRestoreDimensions &&
-            (pane.terminal.cols !== coldRestoreCols || pane.terminal.rows !== coldRestoreRows)
+            coldRestoreDimensions &&
+            (pane.terminal.cols !== coldRestoreDimensions.cols ||
+              pane.terminal.rows !== coldRestoreDimensions.rows)
           ) {
             // Why: recovered ANSI cursor positions belong to the checkpoint's grid; keep this layout-only resize from reaching the fresh PTY.
             suppressStructuralReplayPtyResize = true
             try {
-              pane.terminal.resize(coldRestoreCols, coldRestoreRows)
+              pane.terminal.resize(coldRestoreDimensions.cols, coldRestoreDimensions.rows)
             } finally {
               suppressStructuralReplayPtyResize = false
             }

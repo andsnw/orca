@@ -4,6 +4,7 @@ import {
   demotedTerminalScrollbackRows,
   isTerminalWorktreeScrollbackDemoted,
   resetTerminalScrollbackDemotion,
+  resolveTerminalMountScrollbackRows,
   setScrollbackDemotedTerminalWorktrees,
   subscribeTerminalScrollbackDemotion
 } from './terminal-hidden-scrollback-demotion'
@@ -52,5 +53,19 @@ describe('demotedTerminalScrollbackRows', () => {
   it('never exceeds the configured rows', () => {
     expect(demotedTerminalScrollbackRows(50_000)).toBe(TERMINAL_DEMOTED_SCROLLBACK_ROWS)
     expect(demotedTerminalScrollbackRows(500)).toBe(500)
+  })
+})
+
+describe('resolveTerminalMountScrollbackRows', () => {
+  // Why: pane births (splits) under an already-demoted worktree bypass the
+  // post-mount demotion effect entirely — the mount options must demote.
+  it('demotes new xterms while the worktree verdict is set, restores after clear', () => {
+    setScrollbackDemotedTerminalWorktrees(new Set(['wt-demoted']))
+    expect(resolveTerminalMountScrollbackRows('wt-demoted', 50_000)).toBe(
+      TERMINAL_DEMOTED_SCROLLBACK_ROWS
+    )
+    expect(resolveTerminalMountScrollbackRows('wt-other', 50_000)).toBe(50_000)
+    resetTerminalScrollbackDemotion()
+    expect(resolveTerminalMountScrollbackRows('wt-demoted', 50_000)).toBe(50_000)
   })
 })

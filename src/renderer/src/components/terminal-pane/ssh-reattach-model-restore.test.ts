@@ -1,11 +1,36 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   decideSshReattachPaintSource,
+  resolveSshReattachModelSnapshotWithTimeout,
   shouldFetchSshReattachModelSnapshot
 } from './ssh-reattach-model-restore'
 
 const SSH_PTY_ID = 'ssh:conn-1@@relay-pty-1'
 const LOCAL_PTY_ID = 'repo::/worktree@@session-1'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('resolveSshReattachModelSnapshotWithTimeout', () => {
+  it('degrades a stalled snapshot probe to null', async () => {
+    vi.useFakeTimers()
+    const pending = new Promise<string>(() => {})
+    const resolved = resolveSshReattachModelSnapshotWithTimeout(pending, 25)
+
+    await vi.advanceTimersByTimeAsync(25)
+    await expect(resolved).resolves.toBeNull()
+  })
+
+  it('passes through a prompt snapshot and degrades rejection to null', async () => {
+    await expect(
+      resolveSshReattachModelSnapshotWithTimeout(Promise.resolve('snapshot'), 25)
+    ).resolves.toBe('snapshot')
+    await expect(
+      resolveSshReattachModelSnapshotWithTimeout(Promise.reject(new Error('unavailable')), 25)
+    ).resolves.toBeNull()
+  })
+})
 
 describe('shouldFetchSshReattachModelSnapshot', () => {
   it('fetches only for SSH ptys with SSH parking enabled', () => {

@@ -592,6 +592,36 @@ describe('launchAgentInNewTab', () => {
     )
   })
 
+  it('uses WSL launch quoting for default agent args containing a single quote', async () => {
+    store.settings.terminalWindowsShell = 'cmd.exe'
+    store.settings.agentDefaultArgs = { codex: '--profile "don\'t"' }
+    store.projects = [
+      {
+        id: 'repo-1',
+        localWindowsRuntimePreference: { kind: 'wsl', distro: 'Ubuntu' }
+      }
+    ]
+    store.repos = [{ id: 'repo-1', connectionId: null, path: 'C:\\Users\\jinwo\\repo' }]
+    store.worktreesByRepo = {
+      'repo-1': [
+        {
+          id: 'wt-1',
+          repoId: 'repo-1',
+          projectId: 'repo-1',
+          path: 'C:\\Users\\jinwo\\repo\\feature',
+          displayName: 'feature'
+        }
+      ]
+    }
+    const { launchAgentInNewTab } = await import('./launch-agent-in-new-tab')
+
+    launchAgentInNewTab({ agent: 'codex', worktreeId: 'wt-1' })
+
+    const queued = mockQueueTabStartupCommand.mock.calls.at(-1)?.[1] as { command: string }
+    expect(queued.command).toContain("'don'\\''t'")
+    expect(queued.command).not.toContain("'don''t'")
+  })
+
   it('falls back to post-ready draft paste when a Windows inline draft would be too large', async () => {
     const { launchAgentInNewTab } = await import('./launch-agent-in-new-tab')
     const prompt = 'x'.repeat(25_000)

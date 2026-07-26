@@ -27,6 +27,54 @@ export function makeCreatedAgentWorktree(): Worktree {
   }
 }
 
+/** Seeds a `createdWithAgent` worktree with zero renderable tabs — the state that used to
+ *  trigger the removed creation-agent relaunch. */
+export function seedEmptyActivatableWorktree(
+  worktree: Worktree,
+  options: { extraWorktrees?: Worktree[] } = {}
+): { revealWorktreeInSidebar: ReturnType<typeof vi.fn> } {
+  const revealWorktreeInSidebar = vi.fn()
+  const repoPath = path.join(path.sep, 'workspace', 'repo')
+
+  useAppStore.setState({
+    repos: [
+      {
+        id: worktree.repoId,
+        path: repoPath,
+        displayName: 'repo',
+        badgeColor: '#000000',
+        addedAt: 0
+      }
+    ],
+    worktreesByRepo: { [worktree.repoId]: [...(options.extraWorktrees ?? []), worktree] },
+    activeRepoId: worktree.repoId,
+    activeView: 'terminal',
+    tabsByWorktree: {},
+    unifiedTabsByWorktree: {},
+    groupsByWorktree: {},
+    layoutByWorktree: {},
+    activeGroupIdByWorktree: {},
+    openFiles: [],
+    browserTabsByWorktree: {},
+    activeFileIdByWorktree: {},
+    activeBrowserTabIdByWorktree: {},
+    activeTabTypeByWorktree: {},
+    activeTabIdByWorktree: {},
+    tabBarOrderByWorktree: {},
+    pendingStartupByTabId: {},
+    settings: {
+      agentCmdOverrides: {},
+      setupScriptLaunchMode: 'new-tab'
+    } as unknown as ReturnType<typeof useAppStore.getState>['settings'],
+    markWorktreeVisited: vi.fn(),
+    recordWorktreeVisit: vi.fn(),
+    refreshGitHubForWorktreeIfStale: vi.fn(),
+    revealWorktreeInSidebar
+  })
+
+  return { revealWorktreeInSidebar }
+}
+
 export function seedAlreadyActiveWorktree(
   worktree: Worktree,
   overrides: Partial<ReturnType<typeof useAppStore.getState>> = {}

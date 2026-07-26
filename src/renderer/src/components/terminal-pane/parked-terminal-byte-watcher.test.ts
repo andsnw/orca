@@ -43,6 +43,18 @@ vi.mock('./use-notification-dispatch', () => ({
   dispatchTerminalNotification
 }))
 
+// Why: command-status semantics are covered in parked-terminal-command-status.test.ts;
+// these tests only prove the watcher wires bytes/facts into the policy.
+const commandStatusPolicy = {
+  onCommandFinished: vi.fn(),
+  onCommandCodeWorking: vi.fn(),
+  onCommandCodeDone: vi.fn(),
+  dispose: vi.fn()
+}
+vi.mock('./parked-terminal-command-status', () => ({
+  createParkedTerminalCommandStatusPolicy: vi.fn(() => commandStatusPolicy)
+}))
+
 vi.mock('@/lib/terminal-theme', () => ({
   getSystemPrefersDark: () => true
 }))
@@ -110,6 +122,10 @@ describe('startParkedTerminalByteWatcher', () => {
     vi.resetModules()
     vi.useFakeTimers()
     dispatchTerminalNotification.mockClear()
+    commandStatusPolicy.onCommandFinished.mockClear()
+    commandStatusPolicy.onCommandCodeWorking.mockClear()
+    commandStatusPolicy.onCommandCodeDone.mockClear()
+    commandStatusPolicy.dispose.mockClear()
     onData = null
     mockStoreState = createMockStoreState()
     ;(globalThis as { window: typeof window }).window = {
@@ -372,6 +388,26 @@ describe('startParkedTerminalByteWatcher', () => {
     dispose()
   })
 
+  it('scans OSC 133;D bytes into the parked command policy and disposes it with the watcher', async () => {
+    const { dispose } = await startWatcher()
+
+    emit('\x1b]133;D;0\x07')
+    expect(commandStatusPolicy.onCommandFinished).toHaveBeenCalledWith(0)
+
+    dispose()
+    expect(commandStatusPolicy.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('feeds Command Code output through the parked byte detector', async () => {
+    const { dispose } = await startWatcher()
+
+    emit('# Command Code v0.27.2')
+    emit('⌘ Parsing...')
+
+    expect(commandStatusPolicy.onCommandCodeWorking).toHaveBeenCalledTimes(1)
+    dispose()
+  })
+
   it('fires completion when seeded with a working title and the agent goes idle while parked', async () => {
     // Why: the pane was working at park time; the watcher's fresh tracker
     // must be seeded or this working→idle transition can never fire.
@@ -572,6 +608,32 @@ describe('startParkedTerminalByteWatcher', () => {
       expect(mockStoreState.markWorktreeUnread).not.toHaveBeenCalled()
       expect(mockStoreState.markTerminalTabUnread).not.toHaveBeenCalled()
       expect(dispatchTerminalNotification).not.toHaveBeenCalled()
+      dispose()
+    })
+
+    it('routes command lifecycle facts into the parked command policy', async () => {
+      enableMainAuthority()
+      const { dispose } = await startWatcher()
+
+      await dispatchFacts([
+        { kind: 'command-finished', exitCode: 0 },
+        { kind: 'command-code-working', prompt: 'Fix the spinner' },
+        { kind: 'command-code-done', prompt: 'Fix the spinner' }
+      ])
+
+      expect(commandStatusPolicy.onCommandFinished).toHaveBeenCalledWith(0)
+      expect(commandStatusPolicy.onCommandCodeWorking).toHaveBeenCalledWith('Fix the spinner')
+      expect(commandStatusPolicy.onCommandCodeDone).toHaveBeenCalledWith('Fix the spinner')
+      dispose()
+    })
+
+    it('ignores replayed command lifecycle facts (no-attention-replay rule)', async () => {
+      enableMainAuthority()
+      const { dispose } = await startWatcher()
+
+      await dispatchFacts([{ kind: 'command-finished', exitCode: 0 }], { seq: 5, replay: true })
+
+      expect(commandStatusPolicy.onCommandFinished).not.toHaveBeenCalled()
       dispose()
     })
 

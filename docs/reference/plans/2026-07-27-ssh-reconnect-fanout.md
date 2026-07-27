@@ -1,10 +1,10 @@
 # Direct SSH reconnect fan-out
 
-Status: implementation-ready design after **two rounds of LLM counsel review**
+Status: implementation-ready design, reconciled with current main
 
-This design was reviewed by multi-model LLM counsel for **two full rounds** (round 1 rewrite of fan-out / host-blind provider selection / terminal cleanup / store-fence gaps; round 2 residual seam audit for epoch boundaries, cancellation settlement, snapshot hydration, authority advance, and disconnect cleanup). Counsel findings are absorbed into the invariants and rollout plan below; the raw counsel artifacts are not part of this PR.
+This design was reviewed by multi-model LLM counsel for **two full rounds** (round 1 rewrite of fan-out / host-blind provider selection / terminal cleanup / store-fence gaps; round 2 residual seam audit for epoch boundaries, cancellation settlement, snapshot hydration, authority advance, and disconnect cleanup). It was then reconciled with current main and revised for independent waiter/provider identities, authoritative response construction, contradictory ownership provenance, and timeout retry barriers. Review findings are absorbed into the invariants and rollout plan below; raw counsel artifacts are not part of this PR.
 
-Validated against worktree `HEAD` at `2b244fa0ea7b82e611d33de554a89766489d1baa`. Round 2 counsel checked this surface independently against that commit; the adjacent remote-runtime resume changes on later `origin/main` do not replace the direct SSH authority or terminal-recovery paths and require a non-double-finalization integration test during rebase.
+Validated against `origin/main` at `79ec57d045fb395cbe986b39815aedad985f64ca` after rebasing the design branch. Current main includes remote-runtime resume/online recovery (#8255), worktree-owned routing for multi-host projects (#10986), negotiated paired-runtime close intent (#10129), and fail-closed runtime project setup for SSH hosts (#10799). None replaces the direct desktop SSH reconnect path, but each constrains its ownership and lifecycle integration below.
 
 Scope: direct SSH reconnect recovery across main, preload, and renderer
 
@@ -38,7 +38,7 @@ This remains separate from the sidebar fix in `9d3ae3adc7`, which does not own `
 
 - Changing SSH credentials, backoff policy, or user-facing reconnect controls.
 - Moving runtime-owned work into the direct SSH coordinator.
-- Changing the sidebar coalescer added by `9d3ae3adc7`.
+- Changing the component-scoped sidebar refresh queue added by `9d3ae3adc7`; the shared detected-worktree provider coalescer does gain lease accounting.
 - Expanding remote-workspace serialization to folder workspaces.
 - Changing Git commands, worktree parsing, or Git capability detection.
 - Changing the remote-runtime wire protocol.
@@ -77,6 +77,44 @@ For `T` live tabs, `W` workspace buckets, and terminal maps of size `M`, synchro
 - Direct SSH catalog and lineage preparation follows focused-runtime ownership in some paths.
 - Direct SSH lineage preparation currently calls bare `fetchWorktreeLineage()`, whose ownership can follow focused-runtime settings rather than the SSH target.
 
+### Deterministic current-main baseline
+
+The falsifiable current-main invariants are:
+
+1. one connected direct SSH event must issue at most one detected-worktree scan per exact repo input and one host-qualified lineage read;
+2. an authoritative detected-worktree or lineage result must identify one exact execution host and, for direct SSH, the complete provider authority;
+3. explicit worktree, repo-derived, runtime-owner, folder, and PTY provenance must not contradict one another; and
+4. a first timeout classified as retryable must not release lineage, sync, or token creation before its retry reaches a terminal outcome.
+
+Current main violates the first two at the smallest deterministic seams:
+
+- `applySshConnectionStateChange` runs `fetchWorktrees` plus lineage and then calls `syncRemoteWorkspaceAfterConnect`;
+- `syncRemoteWorkspaceAfterConnect` calls `prepareRemoteWorkspaceTarget`, and a nonempty snapshot calls `applyRemoteWorkspaceSnapshot`, which calls it again;
+- the shared renderer coalescer joins only overlapping promises and deletes the entry when they settle, so these awaited sequential waves remain `2R` scans and two lineage reads without a snapshot or `3R` and three with one;
+- renderer refresh selection accepts `executionHostId`, while preload `worktrees.listDetected` and main `worktrees:listDetected` accept only `{ repoId }`; main then uses first-match `store.getRepo(repoId)`.
+
+Baseline commands run from the rebased worktree:
+
+```bash
+pnpm install --frozen-lockfile
+rg -n "prepareRemoteWorkspaceTarget|applyRemoteWorkspaceSnapshot|syncRemoteWorkspaceAfterConnect|store.fetchWorktrees|fetchWorktreeLineage" src/renderer/src/hooks/useIpcEvents.ts
+rg -n "listDetected: \\(args: \\{ repoId: string \\}\\)|store.getRepo\\(args.repoId\\)" src/preload/api-types.ts src/main/ipc/worktrees.ts
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/store/slices/worktrees.test.ts -t "coalesces concurrent duplicate refreshes for the same repo and host|keeps same-repo refreshes separate for different execution hosts|fetches the requested host when duplicate repo ids exist"
+pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/worktrees.test.ts -t "coalesces concurrent authoritative detected worktree scans"
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/useIpcEvents.test.ts -t "clears stale remote PTYs when an SSH connection fully disconnects|waits for the remote workspace client id before dropping self notifications"
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/ssh-reconnect-pane-retry.test.ts
+pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/ssh.test.ts src/main/ssh/ssh-channel-multiplexer.test.ts src/renderer/src/runtime/use-remote-runtime-recovery-triggers.test.ts -t "surfaces relay channel loss while the SSH connection remains alive|does not broadcast a premature connected when relay deploy fails|times out after 30s with no response|advances both recovery schedulers"
+```
+
+Results on `79ec57d04`: 3/3, 1/1, 2/2, 4/4, and 3/3 selected tests passed respectively. Source-contract inspection confirmed the `2R`/`3R` call graph and the dropped host field. This is baseline evidence, not candidate green evidence: this PR contains no runtime implementation. Docker SSH is unnecessary for these disputed design claims because the renderer/main seams express them deterministically.
+
+Current-main reconciliation:
+
+- #8255 advances paired remote-runtime control and pane backoffs on resume/online. Direct SSH registers its own wake input and must not call or absorb that scheduler; one OS event may wake both ownership domains, but each exact pane finalizes at most once.
+- #10986 correctly routes an exact worktree by its own host in multi-host projects. Direct reconnect reuses that worktree-specific precedence only after rejecting any contradictory provenance; it never falls back to project-wide repo ambiguity or focused-runtime ownership.
+- #10129 makes capable paired-runtime reasonless close fail closed. Direct SSH cleanup clears transient bindings only: it never emits `session.tabs.close`, retires a tab, or kills a provider PTY.
+- #10799 confirms runtime project setup must refuse `ssh:` rather than act locally. The desktop direct-SSH handler likewise rejects `runtime:` hosts, and runtime-owned SSH rows remain under runtime authority.
+
 ## Invariants
 
 ### Authoritative provider authority
@@ -92,17 +130,18 @@ For `T` live tabs, `W` workspace buckets, and terminal maps of size `M`, synchro
 9. If a connected event lacks either component, the renderer performs one bounded `ssh:getState` reconciliation with a per-target arrival watermark. The reply may fill authority only if no newer push event arrived and the stored event/status still matches the initiating event; it cannot transition status or resurrect an older `connected` state. If authority remains unknown, authoritative preparation, retry, sync, and snapshot mutation fail closed with `authority-unknown`; disconnect cleanup remains allowed.
 10. After every await and inside every authoritative store updater, current state must still name the same connected target and exact authority pair.
 11. Supersession is determined by coordinator arrival order and exact equality, never numeric ordering.
-12. On any authority change, before new preparation admission, cancel the target's queued work, locally settle obsolete waiter leases, abort unshared in-flight request IDs, mark all late results stale, and retain main-side post-await fences. Terminal finalization for the new authority does not wait for old relay work.
+12. On any authority change, before new preparation admission, cancel the target's queued work, locally settle obsolete waiter leases, abort unshared in-flight provider request IDs, mark all late results stale, and retain main-side post-await fences. Terminal finalization for the new authority does not wait for old relay work.
 
 ### Host-qualified ownership
 
 1. Direct reconnect work owns only `toSshExecutionHostId(targetId)`.
-2. Every coordinator detected-worktree request carries `(repoId, executionHostId, expectedProviderEpoch, expectedConnectionGeneration, requestId)`.
+2. Every coordinator detected-worktree provider invocation carries `(repoId, executionHostId, expectedAuthority, providerRequestId)`. Each renderer consumer separately owns a `waiterLeaseId`; a lease ID never crosses IPC or names provider work.
 3. Main resolves a repo by the complete `(repo.id, getRepoExecutionHostId(repo))` identity. Zero or multiple matches fail closed. It never falls back to first-match `getRepo(repoId)` for a host-qualified request.
 4. A local host request can select only a local repo. A direct SSH host request can select only the matching target/provider. A runtime host is rejected by the desktop handler and must use the existing runtime RPC route.
-5. The response echoes the resolved execution host and full authority. Renderer rejects a mismatched response before any use.
+5. A successful response uses a local or direct-SSH discriminant. The direct-SSH variant cannot be constructed without the resolved execution host and full authority pair. Renderer validates the wire discriminant and rejects a mismatch before any use.
 6. Runtime-owned or runtime-transported worktrees remain under the runtime environment scheduler, including SSH execution hosts whose `runtimeOwnerEnvironmentId` names a HUB.
 7. Raw repo IDs, paths, UI focus, and unqualified legacy metadata are not ownership evidence. Pre-catalog scope resolution uses explicit worktree/repo provenance and `getExplicitRuntimeEnvironmentIdForWorktree`; it must not use the focused-runtime fallbacks in `getExecutionHostIdForWorktree` or `getRuntimeEnvironmentIdForWorktree`. `runtime:unresolved-owner` and focus-only results are ambiguous, not another host's. Unknown ownership is diagnostic and retryable, but never authoritatively replaced or deleted.
+8. All present provenance must agree. Explicit worktree ownership takes precedence only after agreement is proven; repo-derived ownership is a fallback only when explicit worktree ownership is absent. A worktree stamped `ssh:B` with repo-derived `ssh:A`, or any direct-SSH row with an explicit runtime owner, is `contradictory-owner` and is preserved without refresh, merge, retry, or pruning.
 
 ### Merge fencing
 
@@ -137,6 +176,7 @@ For each affected tab, the atomic action must:
 - leave layouts, deferred SSH sessions, pending reconnect IDs, suppression/shutdown guards, tab IDs, titles, generations, and agent state unchanged.
 
 The action must not bump activity, sort worktrees, or persist worktree metadata. A repeat after all qualified bindings are clear returns the original store state.
+It also must not emit `session.tabs.close`, `session.tabs.closeLifecycle`, provider shutdown, or process signals. Binding loss is not close intent, tab retirement, or proof that a PTY died.
 
 Reconnect finalization must:
 
@@ -163,6 +203,9 @@ The direct SSH state boundary becomes:
 
 ```ts
 type SshProviderEpoch = string & { readonly __sshProviderEpoch: unique symbol }
+type ProviderRequestId = string & { readonly __providerRequestId: unique symbol }
+type WaiterLeaseId = string & { readonly __waiterLeaseId: unique symbol }
+type SshExecutionHostId = Extract<ExecutionHostId, `ssh:${string}`>
 
 type DirectSshStateAuthority = {
   providerEpoch: SshProviderEpoch | null
@@ -181,24 +224,42 @@ The epoch wire value is a bounded opaque string. Branding is compile-time only. 
 Extend preload/main detected-worktree APIs:
 
 ```ts
-type ListDetectedWorktreesArgs = {
-  requestId: string
+type LocalDetectedWorktreeRequest = {
+  providerRequestId: ProviderRequestId
   repoId: string
-  executionHostId: ExecutionHostId
-  expectedProviderEpoch?: SshProviderEpoch
-  expectedConnectionGeneration?: number
+  executionHostId: typeof LOCAL_EXECUTION_HOST_ID
 }
+
+type DirectSshDetectedWorktreeRequest = {
+  providerRequestId: ProviderRequestId
+  repoId: string
+  executionHostId: SshExecutionHostId
+  expectedAuthority: DirectSshAuthority
+}
+
+type ListDetectedWorktreesArgs = LocalDetectedWorktreeRequest | DirectSshDetectedWorktreeRequest
+
+type AuthoritativeHost =
+  | {
+      kind: 'local'
+      executionHostId: typeof LOCAL_EXECUTION_HOST_ID
+    }
+  | ({
+      kind: 'direct-ssh'
+      executionHostId: SshExecutionHostId
+    } & DirectSshAuthority)
 
 type HostQualifiedDetectedWorktreeResult =
   | {
       status: 'complete' | 'non-authoritative'
+      providerRequestId: ProviderRequestId
       repoId: string
-      executionHostId: ExecutionHostId
-      providerEpoch?: SshProviderEpoch
-      connectionGeneration?: number
+      authority: AuthoritativeHost
       result: DetectedWorktreeListResult
     }
   | {
+      providerRequestId: ProviderRequestId
+      executionHostId: ExecutionHostId
       status:
         | 'canceled'
         | 'timed-out'
@@ -209,32 +270,37 @@ type HostQualifiedDetectedWorktreeResult =
     }
 ```
 
-Both expected authority fields are required when `executionHostId` is SSH and absent for local requests. Main owns the 30-second provider deadline; no renderer-supplied timeout can extend it. The desktop handler rejects runtime hosts. Keep an explicitly unqualified legacy overload only for existing callers during migration; it fails closed when more than one host owns the repo ID and is removed after all callers pass a host.
+`DirectSshDetectedWorktreeRequest` requires the full pair as one `expectedAuthority`; local requests cannot carry it. Construction and runtime admission also require `executionHostId === toSshExecutionHostId(expectedAuthority.targetId)`. Every data-bearing direct-SSH response, including `non-authoritative` metadata fallback, is therefore impossible to construct without both fields. Runtime validation rejects decoded SSH data payloads missing either component even if an untyped or older boundary fabricates one. Main owns the 30-second provider deadline; no renderer-supplied timeout can extend it. The desktop handler rejects runtime hosts. Keep an explicitly unqualified legacy overload only for existing callers during migration; it fails closed when more than one host owns the repo ID and is removed after all callers pass a host.
 
 Main selects the repo and provider before starting work, captures the provider object and full authority, and checks all three again after `provider.listWorktrees`. A host-qualified SSH response cannot be restamped by renderer as another host.
 
 Use host-qualified lineage ownership as well:
 
 ```ts
-type ListDesktopLineageForHostArgs = {
-  executionHostId: ExecutionHostId
-  expectedProviderEpoch?: SshProviderEpoch
-  expectedConnectionGeneration?: number
-}
+type ListDesktopLineageForHostArgs =
+  | { executionHostId: typeof LOCAL_EXECUTION_HOST_ID }
+  | {
+      executionHostId: SshExecutionHostId
+      expectedAuthority: DirectSshAuthority
+    }
 
-type HostLineageSnapshot = {
-  executionHostId: ExecutionHostId
-  providerEpoch?: SshProviderEpoch
-  connectionGeneration?: number
-  authoritative: boolean
-  worktreeLineageById: Record<string, WorktreeLineage>
-  workspaceLineageByChildKey: Record<string, WorkspaceLineage>
-}
+type HostLineageSnapshot =
+  | {
+      authoritative: true
+      authority: AuthoritativeHost
+      worktreeLineageById: Record<string, WorktreeLineage>
+      workspaceLineageByChildKey: Record<string, WorkspaceLineage>
+    }
+  | {
+      authoritative: false
+      executionHostId: ExecutionHostId
+      reason: 'ambiguous-owner' | 'authority-unknown' | 'stale' | 'unavailable'
+    }
 ```
 
-Main filters the snapshot to the requested host. Renderer replaces only the echoed host scope. Direct SSH preparation replaces the current bare `fetchWorktreeLineage()` call with this host-qualified API; it does not substitute `{ forceLocalOwner: true }`.
+Main filters the snapshot to the requested host. Renderer replaces only an authoritative discriminated host scope; malformed SSH authority is rejected before merge. Direct SSH preparation replaces the current bare `fetchWorktreeLineage()` call with this host-qualified API; it does not substitute `{ forceLocalOwner: true }`.
 
-Main destructive pruning must use qualified repo/worktree ownership. When exactly one stored repo owns a repo ID, that repo's explicit host qualifies a legacy lineage row and preserves today's path-reuse cleanup. When multiple hosts can own the ID, pruning requires row `meta.hostId`; an absent or conflicting host makes the result non-authoritative and preserves the row. Authoritative scans backfill `meta.hostId` so legacy rows self-heal. Never use repo-ID-prefix pruning across hosts.
+Main destructive pruning must use qualified repo/worktree ownership. An existing row `meta.hostId` must agree with the resolved repo host in every case. Only an absent legacy host may be inferred when exactly one stored repo owns the repo ID, preserving today's path-reuse cleanup. When multiple hosts can own the ID, pruning requires row `meta.hostId`; absence or conflict makes the result non-authoritative and preserves the row. Authoritative scans backfill absent `meta.hostId` so legacy rows self-heal. Never use repo-ID-prefix pruning across hosts.
 
 The shared renderer store and web preload retain their existing non-direct-SSH callers. Preserve the legacy/runtime overload and its argument/echo shape in `web-preload-api.ts`, but do not broaden the web client into direct-SSH coordination: paired web clients cannot subscribe to desktop `ssh:state-changed`, so the proposed total direct-SSH web break is not reachable. Shared API type changes still receive compatibility tests so a runtime-routed web read is not rejected merely because the wrapper dropped its requested host.
 
@@ -245,7 +311,7 @@ Add `src/renderer/src/lib/direct-ssh-target-scope.ts`:
 ```ts
 type DirectSshGitRepoRef = {
   repoId: string
-  executionHostId: ExecutionHostId
+  executionHostId: SshExecutionHostId
 }
 
 type DirectSshTargetScope = {
@@ -254,6 +320,7 @@ type DirectSshTargetScope = {
   gitWorktreeIds: Set<string>
   terminalWorkspaceKeys: Set<string>
   ambiguousOwnerCount: number
+  contradictoryOwnerCount: number
 }
 ```
 
@@ -261,10 +328,13 @@ Resolution rules:
 
 - Build the expected host with `toSshExecutionHostId(targetId)`.
 - Resolve repos by `(repo.id, executionHostId)`.
-- Accept a worktree only when its explicit worktree host or exact repo-derived host equals the expected host and `getExplicitRuntimeEnvironmentIdForWorktree` is `null`.
+- Collect explicit worktree host, exact repo-derived host, projected runtime owner, and any restored host evidence before selecting a row.
+- If two present sources disagree, classify the row as `contradictory-owner`; preserve it and exclude it from refresh, merge, terminal retry, snapshot projection, and pruning.
+- When explicit worktree host is present and no source contradicts it, require it to equal the expected host. Use exact repo-derived ownership only when the explicit worktree host is absent.
+- Require `getExplicitRuntimeEnvironmentIdForWorktree` to be `null`; an explicit runtime owner contradicts direct SSH even when another source names the expected SSH host.
 - Do not use focused-runtime fallback ownership during pre-catalog reconnect. Focus-only local/runtime results and `runtime:unresolved-owner` are ambiguous.
-- Accept a folder workspace only when its effective connection is exactly `targetId`, its execution host is expected, and runtime owner is `null`.
-- Treat mixed folders, duplicate same-host owners, and unresolved legacy rows as unowned.
+- Accept a folder workspace only when its effective connection is exactly `targetId`, its execution host is expected, runtime owner is `null`, and all candidate repo/group/workspace provenance agrees.
+- Treat mixed/conflicting folder provenance as contradictory; duplicate same-host owners and unresolved legacy rows are ambiguous/unowned.
 - A parsed live app-SSH PTY can recover a stale-catalog terminal only when no explicit other-host or runtime ownership contradicts it.
 
 Git refresh uses `gitRepos`; terminal clear/retry uses `terminalWorkspaceKeys`; snapshot projection uses `gitWorktreeIds`. Folder workspaces never enter the path-based remote-workspace schema.
@@ -274,12 +344,12 @@ When exact repo rows are missing, use a new host-scoped desktop catalog read rat
 ```ts
 listReposForExecutionHost({
   executionHostId,
-  expectedProviderEpoch,
-  expectedConnectionGeneration
+  expectedAuthority
 })
 ```
 
 The renderer merges the immutable response into only that host scope after a full-authority fence. This action owns a per-host catalog revision and in-flight entry; it does not share `reposFetchGeneration` with focused-runtime or all-host fetches. Thus a concurrent runtime-focused catalog refresh cannot silently supersede direct SSH hydration.
+Its authoritative response uses the same `AuthoritativeHost` discriminant as detected worktrees and lineage, so direct-SSH catalog data also requires the complete pair.
 
 ### 3. Bounded and cancelable direct SSH provider scheduler
 
@@ -291,26 +361,42 @@ Required behavior:
 - owner-aware round-robin selection by target, with repos submitted incrementally rather than flattening one target into a global FIFO;
 - no fixed collection window for an idle singleton request;
 - an input key of `(repoId, executionHostId, providerEpoch, connectionGeneration, catalogRevision, authoritative requirement)`;
-- join only a currently running request with the exact same key;
-- delete the key when that request settles, regardless of outcome;
+- join only a currently running logical repo task with the exact same key;
+- retain the logical key across a first `retrying` timeout and delete it only on a terminal outcome;
 - explicit `complete`, `non-authoritative`, `timed-out`, `canceled`, `stale`, and `rejected` outcomes; and
 - no console error or degraded count for expected cancellation/supersession.
 
-Each request has the existing 30-second main-owned provider deadline. Main creates an `AbortController`, passes its signal to `SshGitProvider.listWorktrees`, and therefore reaches the multiplexer `rpc.cancel` path on timeout. A transient timeout may be requeued once at the tail of that target's round-robin lane if the full authority remains current; the second timeout degrades the repo until a later wake/snapshot input. Add a cancellation IPC keyed by renderer `requestId`; authority advance, target invalidation, supersession, and effect teardown abort matching main requests. Queued requests cancel without invoking IPC.
+Each provider invocation has the existing 30-second main-owned deadline. Main creates an `AbortController`, passes its signal to `SshGitProvider.listWorktrees`, and therefore reaches the multiplexer `rpc.cancel` path on timeout. A transient first timeout changes the repo task to `retrying` and requeues it once at the tail of that target's round-robin lane if the full authority remains current. That repo task promise does not settle, and target lineage/token creation does not start, until the retry completes, reaches its second timeout, is invalidated, or becomes non-retryable because the current provider's cancel-debt budget is exhausted. Add cancellation IPC keyed only by `providerRequestId`; authority advance, target invalidation, last-waiter release, and effect teardown abort matching main requests. Queued requests have no provider request ID and cancel without IPC.
+
+The first timed-out provider invocation and its leases settle before retry admission. The logical repo task remains pending and acquires a fresh provider request ID plus fresh waiter leases for the retry; preparation waiters never reuse an already-canceled provider identity.
 
 Cancellation uses waiter leases:
 
-- Each joined consumer owns a local waiter lease. Canceling or superseding it settles that consumer immediately without canceling current consumers.
-- Main aborts the shared underlying call only when its authority is invalid or no current waiter remains.
-- Cancel acknowledgement means local waiter/provider-promise settlement. `ssh-channel-multiplexer` rejects its local provider promise when it sends fire-and-forget `rpc.cancel`; no relay response is awaited.
+- `waiterLeaseId` and `providerRequestId` are different opaque types generated independently. A provider request ID names one underlying preload/main/provider invocation; every consumer of that shared invocation receives its own renderer-only waiter lease ID.
+- The shared detected-worktree coalescer, not the direct coordinator alone, owns the lease registry so sidebar/filesystem consumers also keep a joined provider invocation alive.
+- Canceling or superseding one lease settles only that consumer. It does not call cancellation IPC while any other lease remains.
+- Releasing the last lease sends exactly one cancellation IPC carrying the provider request ID and captured host/authority. Main never receives, stores, or accepts waiter lease IDs.
+- Main aborts the provider request when that cancellation identity matches or when provider authority is invalidated. It does not reconstruct waiter ownership.
+- Local cancellation returns after waiter settlement and, for the last lease, main provider-promise settlement. `ssh-channel-multiplexer` rejects its local provider promise when it sends fire-and-forget `rpc.cancel`; no relay response is awaited.
 - The scheduler releases the local slot when the underlying provider promise settles locally. The original relay handler may observe abort later, so this metric is not a hard relay-process concurrency claim.
 - Track every locally canceled underlying call as conservative cancel debt on its provider instance. Admission requires `locallyUnsettled + cancelDebt <= DIRECT_SSH_PROVIDER_START_BUDGET` (seven), so five canceled calls permit at most two replacements and repeated cancel/retry cannot create unbounded client-originated work. Debt is not cleared by elapsed time or local promise settlement because neither proves relay completion; it clears only when the owning provider/multiplexer is disposed or replaced. Once the budget is exhausted, further work waits outside the five local slots and the target degrades until a fresh authoritative provider exists. A hard bound on handlers surviving disposal is impossible without a relay acknowledgement, so telemetry states this as a seven-start per-provider budget rather than a total remote-process guarantee.
+
+```ts
+type DetectedWorktreeRefreshLease = {
+  waiterLeaseId: WaiterLeaseId
+  providerRequestId: ProviderRequestId
+  result: Promise<HostQualifiedDetectedWorktreeResult>
+  release(reason: 'superseded' | 'invalidated' | 'stopped'): void
+}
+```
+
+Each lease has its own settlement promise. Normal provider settlement resolves all remaining leases and removes the provider entry automatically; early `release` is idempotent and settles only that lease as canceled.
 
 Every other preparation await is bounded too: host-scoped catalog and lineage IPC use five-second deadlines, workspace hydration retains its ten-second deadline, and existing remote-workspace RPC deadlines remain in force. Catalog and lineage waiters accept coordinator cancellation; because their main work does not launch a provider process, a late reply is discarded by the renderer fence rather than holding a scheduler slot.
 
 The existing runtime project scheduler keeps its own five-worker pool, 250 ms debounce, and 5-second minimum interval. Sidebar and filesystem-event refreshes remain unchanged. Cross-subsystem isolation is intentional; the coordinator's bound is not presented as a renderer-wide bound.
 
-Keep the existing shared `detectedWorktreeRefreshKey` unchanged. The coordinator's authority/revision key wraps that coalescer; it must not fragment sidebar or filesystem-event sharing. A coordinator waiter may join compatible shared provider work, but only the coordinator wrapper owns authority leases, result fencing, retry, and scoped metrics.
+Keep the public `detectedWorktreeRefreshKey` shape unchanged. Its in-flight entry records a provider invocation identity and a lease map; direct-SSH authoritative work may join only when host and full authority also match. An incompatible entry under the same public key gets a separate underlying invocation rather than an unsafe join. The coordinator's authority/revision key wraps this coalescer without fragmenting compatible sidebar or filesystem-event sharing. The shared coalescer owns provider request IDs and waiter leases; the coordinator owns authority/revision fencing, retry state, and scoped metrics.
 
 ### 4. Per-target reconnect coordinator
 
@@ -381,7 +467,7 @@ async function requestReconnect(authority) {
 
 The first terminal retry is complete before `capturePreparationInput` performs any await. Target B therefore retries even when target A has five slow provider requests. A same-authority duplicate runs bounded correction: healthy live bindings are no-ops, pending attempts are not duplicated, and failed/unbound tabs can re-arm. When workspace hydration completes, `finalizeHydratedTerminals` reruns against the current authority and handles newly hydrated or still-unbound tabs.
 
-Preparation for each target progresses independently. As soon as that target's repo requests settle or time out, it performs its own host-scoped lineage read, reruns idempotent terminal finalization for newly resolved tabs, and produces its token. It never waits for another target's repos or lineage.
+Preparation for each target progresses independently. While authority remains current, it performs its host-scoped lineage read only after every repo task reaches a terminal state: `complete`, `non-authoritative`, final `timed-out`, or `rejected`. Authority-wide `canceled`/`stale` returns without lineage or a token. A first retryable timeout is the nonterminal `retrying` state and cannot release lineage, terminal correction, sync, or token creation. The target never waits for another target's repos or lineage.
 
 When authority rotates again within `RELAY_LOST_STABILIZED_MS` (currently five seconds), replace the delayed preparation with the latest authority and perform terminal finalization immediately. Only the authority that survives the stabilization window starts catalog/Git/lineage work. A same-authority wake during that window coalesces into the pending latest-authority preparation. This is damping, not an epoch-long result cache.
 
@@ -550,16 +636,17 @@ Remote snapshot identity is repo-qualified where the schema provides repo identi
 - **Unknown authority:** reconcile once behind the per-target arrival watermark; then fail closed with a retryable diagnostic. Do not use a renderer counter or apply the reply's status.
 - **Catalog timeout/failure:** retain cached exact-owner scope, record degradation, and continue target preparation and already-completed terminal recovery.
 - **One repo is non-authoritative:** keep its safe metadata fallback separate from operational failure and do not authoritatively delete rows.
-- **One repo times out:** locally settle its waiter, send best-effort cancel, and requeue once at the target lane tail when authority remains current and cancel-debt admission allows it. A second timeout degrades the repo; continue the target's other repos and never block another target's terminal retry.
+- **One repo times out:** the provider invocation settles locally and sends best-effort cancel. On the first retryable timeout, keep the logical repo task and target preparation barrier pending in `retrying`, then requeue once at the target lane tail. A second timeout is final and degrades the repo. If current-provider cancel debt makes retry admission impossible, finalize as `retry-budget-exhausted` instead of producing an early token or waiting forever. None of these states blocks another target's terminal retry.
 - **One repo rejects:** locally settle it without retry unless classified by the existing narrow transient predicate; operational rejection remains distinct from timeout and non-authoritative data.
 - **Lineage timeout/failure:** preserve current lineage, mark target preparation degraded, and continue sync with exact cached worktree scope.
-- **Authority advance or target invalidation:** synchronously cancel queued work, settle obsolete local waiter leases, abort unshared in-flight request IDs, rotate renderer in-flight inputs and terminal-attempt state, and reject late results at both main and renderer fences. The new authority begins terminal finalization without waiting for relay acknowledgement.
+- **Authority advance or target invalidation:** synchronously cancel queued work, settle obsolete local waiter leases, abort unshared in-flight provider request IDs, rotate renderer in-flight inputs and terminal-attempt state, and reject late results at both main and renderer fences. The new authority begins terminal finalization without waiting for relay acknowledgement.
 - **Relay flapping:** finalize terminals for every new authority, but replace/defer full preparation until the latest authority survives `RELAY_LOST_STABILIZED_MS`.
 - **Missed disconnect/stale binding:** clear only PTY bindings whose transient binding authority is absent or old, retain last-known relay identifiers, then retry under the new authority.
 - **Failed terminal spawn/reattach:** settle the attempt as failed, remove it from pending/success state, and allow rate-limited correction on later preparation, hydration, snapshot, or wake triggers.
 - **Workspace hydration timeout:** set existing per-target sync error; do not undo terminal or worktree recovery. Snapshot merge never replaces a newer local recovery revision.
 - **Coordinator stop:** cancel queued work, locally settle every waiter, send best-effort aborts for unshared provider calls, and return without waiting for relay acknowledgement. Effect cleanup stops coordinator after subscriptions and before disposing its dedicated scheduler.
 - **Unknown owner:** preserve state, count it, and retry on later host-qualified catalog input.
+- **Contradictory owner:** preserve state, report the conflicting provenance classes without identifiers, and do not retry or mutate that row until a later catalog revision changes the evidence.
 
 No failure path falls back to unbounded `Promise.all`.
 
@@ -572,12 +659,12 @@ Fields:
 - mode and reason;
 - terminal tabs considered/retried and terminal-finalization duration;
 - catalog outcome and duration;
-- repo tasks completed, non-authoritative, timed-out, canceled, stale, and rejected;
+- repo tasks completed, non-authoritative, retrying, final timed-out, retry-budget-exhausted, canceled, stale, and rejected;
 - direct-scheduler queue-wait and provider-execution duration distributions;
 - timeout retry count, local waiter settlements, cancel debt, and replacement admissions delayed by cancel debt;
 - peak locally unsettled coordinator-owned detected-worktree concurrency and estimated late-work allowance;
 - lineage outcome;
-- Git-worktree, folder-workspace, and ambiguous-owner counts;
+- Git-worktree, folder-workspace, ambiguous-owner, and contradictory-owner counts;
 - overlapping request joins;
 - authority rotations observed, preparations damped during flapping, stale bindings cleared, terminal attempts failed/re-armed, and arrival-order replies discarded;
 - total target-operation duration.
@@ -592,13 +679,16 @@ The concurrency metric is explicitly `coordinator_owned_direct_ssh_detected_work
 
 ## Tests
 
+Implementation PRs register the worktree scan-count, host/authority, timeout-barrier, and no-cross-host mutation oracles in the existing `git-worktree.refresh-event-semantics` gate. They extend `terminal-provider.ssh-remote-reattach-contract` for direct-SSH binding clear/retry, hydration, folder workspace, paired-close non-interference, and #8255 wake isolation. A new reliability gate is unnecessary unless implementation reveals a distinct lifecycle contract that neither existing gate owns.
+
 ### Main/preload host and authority contract
 
-- Preload forwards `repoId`, `executionHostId`, both expected authority fields, and request ID unchanged; main owns the deadline.
+- Preload forwards `repoId`, `executionHostId`, the complete expected authority, and `providerRequestId` unchanged; main owns the deadline and never receives `waiterLeaseId`.
 - Renderer host intent across local, direct SSH A/B, and runtime-alias catalog rows routes to the exact provider. Fabricated duplicate main-store rows still fail closed as defense in depth.
 - Desktop main rejects a runtime execution host.
 - Zero or multiple same-host matches fail closed; unqualified legacy calls fail closed when ownership is ambiguous.
-- A response echoes exact host and both authority fields; renderer rejects any mismatch.
+- Compile-time fixtures cannot construct a direct-SSH `complete` result or `authoritative: true` lineage snapshot without both authority fields. Runtime admission rejects malformed wire values that omit either field. Local authoritative variants carry neither SSH field.
+- A response echoes exact host and complete authority; renderer rejects any host, target, epoch, generation, provider request, or discriminant mismatch.
 - Relay loss/replacement, transport loss/replacement, provider disposal, target readoption, and permanent removal rotate epoch and generation in one helper.
 - Relay-only replacement rejects both old reconnect/provider work and an old `SshMutationExpectation`.
 - A fresh `connected` authority is not broadcast until its provider is registered.
@@ -623,6 +713,8 @@ The concurrency metric is explicitly `coordinator_owned_direct_ssh_detected_work
 - Host-scoped lineage deletes a stale direct SSH row while preserving local, another SSH target, runtime, and unknown-owner rows.
 - Runtime-focused UI state cannot redirect direct SSH catalog, worktree, or lineage ownership.
 - Pre-catalog direct SSH scope with a focused runtime treats focus fallback as ambiguous and still recovers tabs supported by explicit PTY/host provenance.
+- An explicit `ssh:B` worktree with repo-derived `ssh:A` is `contradictory-owner` for both targets and remains byte-identical. The inverse mismatch, an SSH host plus explicit runtime owner, and conflicting folder group/repo connections fail the same way.
+- Repo-derived ownership is accepted only when explicit worktree ownership is absent; adding a conflicting explicit owner converts the same row from accepted to preserved/contradictory without cross-host deletion.
 - Git 2.25-compatible worktree fallbacks remain unchanged.
 
 ### Direct SSH scheduler/coordinator
@@ -632,10 +724,13 @@ The concurrency metric is explicitly `coordinator_owned_direct_ssh_detected_work
 - Target B's first repo starts after at most one bounded provider deadline when it arrives behind five A calls.
 - Round-robin admission prevents a large target from continually reoccupying every released slot.
 - Peak coordinator-owned detected-worktree calls is five; runtime/sidebar activity can raise total app concurrency without failing this assertion.
-- Canceling one of two joined consumers settles that waiter while the other completes from the original call; only last-waiter or authority cancellation aborts the underlying request.
+- Joined consumers receive distinct waiter lease IDs and one shared provider request ID. Canceling one settles only that lease while the other completes from the original call; no provider cancel is sent.
+- Last-waiter and authority cancellation send exactly one provider request ID. A waiter lease ID presented to main is rejected and cannot abort provider work.
+- A coordinator lease joining sidebar/filesystem work cannot abort that work when the coordinator is superseded; the remaining non-coordinator lease keeps the provider request alive.
 - A timeout sends `rpc.cancel`, settles locally, and releases its local slot without a relay acknowledgement.
 - Repeated timeout replacements never exceed the two-call cancel-debt allowance; excess work waits outside local slots and is reported separately.
-- A transient timeout retries once at the tail; a second timeout degrades without starving another target.
+- After a first retryable timeout, the repo task is `retrying`: lineage calls, preparation tokens, sync, and snapshot apply remain at zero until the retry settles.
+- A successful retry then releases one lineage read and one token; a second timeout or retry-budget exhaustion releases a degraded result without starving another target.
 - A same-authority reconnect rechecks terminals but does not rebump a healthy current-authority binding.
 - A newly hydrated tab receives one retry later under the same authority.
 - A tab whose exact ownership becomes visible during that target's preparation receives one retry without delaying the first terminal finalization.
@@ -648,7 +743,7 @@ The concurrency metric is explicitly `coordinator_owned_direct_ssh_detected_work
 - A preparation-only request shares exact in-flight repo work with reconnect preparation but not reconnect finalization.
 - A completed preparation never suppresses a later same-authority wake or snapshot preparation.
 - Stop locally settles queued/in-flight waiters without waiting for relay acknowledgement and prevents post-stop finalization.
-- System resume/browser online plus a direct SSH wake does not double-bump a tab already live under the current authority.
+- One system resume/browser-online event advances #8255 remote-runtime backoffs and direct-SSH wake preparation independently; runtime-owned SSH rows never enter the direct coordinator, and a direct tab already live under current authority is not double-bumped.
 
 ### Atomic terminal recovery
 
@@ -666,6 +761,7 @@ The concurrency metric is explicitly `coordinator_owned_direct_ssh_detected_work
 - Binding provenance for another authority or no provenance is stale; a successful current-authority spawn becomes live and suppresses healthy correction.
 - Two automatic correction attempts per rolling 30 seconds are allowed; later triggers wait for token refill rather than permanently ledgering the tab.
 - Disconnect retains exact existing ordering and effects for `clearRemoteDetectedAgents`, `clearPortForwards`, `setDetectedPorts([])`, and atomic PTY clear.
+- Disconnect and reconnect emit zero paired `session.tabs.close`/`closeLifecycle`, provider shutdowns, or process signals.
 
 ### Remote-workspace and hydration integration
 
@@ -704,9 +800,10 @@ Seed direct SSH targets, a runtime environment, sidebar refreshes, worktrees, fo
 - `src/main/ssh/ssh-provider-authority.ts` composes epoch issuance with `ssh-connection-generation.ts`; `src/main/ipc/ssh.ts` rotates on every provider transition, registers before `connected`, and publishes the pair.
 - `src/shared/ssh-types.ts`, `ssh-retained-payload-admission.ts`, `runtime-client-events.ts`, and public SSH state projection define, validate, and retain the complete authority. `src/preload/api-types.ts`, `src/preload/index.ts`, startup reconnect, runtime SSH state, and web mutation readers copy it unchanged.
 - `src/renderer/src/store/slices/ssh-target-cleanup.ts` and `ssh.ts` make the authority pair equality-significant and patch-preserving. The state-event/reconciliation code in `useIpcEvents` owns arrival watermarks.
-- `src/main/ipc/worktrees.ts` and the provider authority module own exact host/provider resolution, main deadlines, cancellation leases, post-await fences, qualified lineage pruning, and host metadata backfill.
-- `src/renderer/src/hooks/direct-ssh-worktree-refresh-scheduler.ts` owns the five local slots, target round-robin, coordinator-only key, one timeout retry, local cancellation settlement, and cancel-debt allowance. It wraps rather than changes the shared detected-worktree coalescer.
-- `src/renderer/src/hooks/direct-ssh-reconnect-coordinator.ts` owns per-target authority replacement, waiter leases, stabilization damping, preparation tokens, pending attempts, success ledger, and bounded corrective triggers.
+- `src/main/ipc/worktrees.ts` and the provider authority module own exact host/provider resolution, the provider-request registry, main deadlines/aborts, post-await fences, qualified lineage pruning, and host metadata backfill. Main has no waiter-lease concept.
+- `src/renderer/src/store/slices/detected-worktree-refresh-leases.ts` owns the existing public coalescer key, compatible provider invocation entries, independently generated provider request and waiter lease IDs, ref-counted last-waiter cancellation, and per-lease settlement for every caller.
+- `src/renderer/src/hooks/direct-ssh-worktree-refresh-scheduler.ts` acquires shared leases and owns the five local slots, target round-robin, authority/revision wrapper key, nonterminal `retrying` state, one timeout retry, and cancel-debt allowance.
+- `src/renderer/src/hooks/direct-ssh-reconnect-coordinator.ts` owns per-target authority replacement, preparation waiters, stabilization damping, preparation barriers/tokens, pending terminal attempts, success ledger, and bounded corrective triggers.
 - `src/renderer/src/lib/direct-ssh-target-scope.ts` uses explicit provenance for Git and folder scope; it never reads focused-runtime ownership.
 - Terminal slice actions and `src/renderer/src/store/slices/direct-ssh-terminal-recovery.ts` own atomic clear, stale-binding invalidation, transient PTY authority, attempt settlement, and single-publication retry projection.
 - `src/renderer/src/hooks/remote-workspace-target-sync.ts` owns capture-before-await revision-zero push, token/revision fences, repo-qualified legacy-safe resolution, local recovery preservation, snapshot-driven reattach, and post-hydration finalization.
@@ -717,10 +814,10 @@ Seed direct SSH targets, a runtime environment, sidebar refreshes, worktrees, fo
 Land in bisectable stages:
 
 1. Add the opaque epoch and `rotateSshProviderAuthority`, expand `connectionGeneration` rotation to the same transition set, and inventory every state equality/copy/preload/retained/reconciliation boundary. Land epoch-only publication, retained-admission, stale-reconciliation, provider-before-broadcast, and old-mutation-expectation tests before any coordinator routing.
-2. Add host-qualified detected-worktree and lineage IPC, exact main provider selection, main-owned 30-second deadline, waiter-aware cancellation, and main pre-mutation fences. Preserve the web/runtime overload without enabling direct-SSH web coordination. Keep the coordinator disabled.
-3. Refactor renderer worktree/catalog/lineage reads to immutable results with pre-mutation full-authority fences. Add the host-scoped catalog lane independent of focused-runtime supersession, explicit-provenance scope resolution, legacy lineage host backfill, and a coordinator wrapper around the unchanged shared coalescer.
+2. Add host-qualified detected-worktree and lineage IPC, discriminated authoritative response admission, exact main provider selection, main-owned 30-second deadline, provider-request cancellation, and main pre-mutation fences. Preserve the web/runtime overload without enabling direct-SSH web coordination. Keep the coordinator disabled.
+3. Refactor renderer worktree/catalog/lineage reads to immutable results with pre-mutation full-authority fences. Add the host-scoped catalog lane independent of focused-runtime supersession, all-provenance contradiction rejection, legacy lineage host backfill, and shared coalescer leases with distinct waiter/provider IDs.
 4. Add exact target scope, atomic disconnect clear, stale-authority binding invalidation, retry-attempt settlement, and transient binding provenance. Switch disconnect and reconnect terminal handling together so Git/folder clear-retry symmetry and detected-agent/port cleanup remain intact in every commit.
-5. Add the dedicated fair direct SSH scheduler and per-target coordinator with local-settlement semantics, ref-counted waiter leases, one timeout retry, cancel-debt admission, authority-advance invalidation, same-authority correction, and flapping damping. Route connected events through reconnect finalization; leave the runtime scheduler unchanged.
+5. Add the dedicated fair direct SSH scheduler and per-target coordinator with local-settlement semantics, the first-timeout preparation barrier, one timeout retry, cancel-debt admission, authority-advance invalidation, same-authority correction, and flapping damping. Route connected events through reconnect finalization; leave #8255 remote-runtime recovery and runtime-owned SSH rows unchanged.
 6. Extract `prepareRemoteWorkspaceTarget`, `syncRemoteWorkspaceAfterConnect`, and `applyRemoteWorkspaceSnapshot` into `src/renderer/src/hooks/remote-workspace-target-sync.ts`. Split preparation-only from reconnect mode, pass the full operation token through revision-zero push and snapshot apply, preserve newer local recovery state, finalize imported terminal hints, and remove repeated preparation calls.
 7. Enable typed aggregate diagnostics/telemetry and dogfood with renderer-catalog owner aliasing, many direct targets, an active focused runtime, sidebar activity, folder workspaces, relay-only flapping, timeout/retry/cancel debt, missed disconnects, failed pane spawns, arrival-order races, system resume/browser online events, and cross-device snapshot changes.
 
@@ -730,11 +827,14 @@ Release checks:
 
 - zero host/authority mismatch accepted at either main or renderer mutation fences;
 - zero authority component dropped at equality, retained, preload, startup, public-state, or reconciliation boundaries;
+- zero authoritative direct-SSH result constructible or admitted without the full authority pair;
 - no cross-host provider selection in duplicate-ID integration tests;
+- no contradictory provenance accepted by OR-matching or repo fallback;
 - terminal finalization is scheduled before provider discovery and is not delayed by another target or runtime/sidebar work;
 - p95/p99 direct scheduler queue wait and provider duration, plus timeout/retry/cancel-debt rates, are reported separately from same-relay non-coordinator traffic;
 - peak coordinator-owned direct SSH detected-worktree concurrency is at most five;
-- cancellation reaches provider work, locally settles without relay acknowledgement, respects the cancel-debt allowance, and does not surface as an operational error;
+- waiter cancellation is lease-local, only last-waiter/authority cancellation sends the distinct provider request ID, provider cancellation settles without relay acknowledgement, and cancel debt remains bounded;
+- no lineage read, preparation token, or sync starts while a first timed-out repo remains retrying;
 - authority advance invalidates old queued/in-flight work and relay flapping produces only one stable preparation wave;
 - missed disconnect, failed spawn, and hydration overwrite cases converge through bounded same-authority correction;
 - later same-authority snapshots containing new worktrees converge;
@@ -749,7 +849,7 @@ Rollback disables coordinator routing while retaining composed authority rotatio
 - Use existing execution-host, folder-workspace, workspace-key, SSH PTY-ID, and path utilities. Do not concatenate execution-host IDs or parse filesystem paths.
 - The design introduces no keyboard behavior or platform-specific UI.
 - Direct SSH on Windows, macOS, Linux, and WSL follows the same host/authority rules.
-- Cancellation uses Electron IPC request IDs and existing `AbortSignal` support; no OS signal semantics or new cancel-ack protocol crosses the wire.
+- Cancellation uses typed provider request IDs over Electron IPC and existing `AbortSignal` support; waiter lease IDs remain renderer-local, and no OS signal semantics or new cancel-ack protocol crosses the wire.
 - No Git command, option, parser, or native dependency changes. Git 2.25 compatibility and capability fallbacks remain authoritative.
 - Remote runtimes require no server upgrade. Runtime-host requests continue through the existing runtime RPC route.
 - Keep new modules within normal line limits; do not add or widen a `max-lines` disable.
@@ -784,9 +884,9 @@ Rejected. Main lineage/metadata changes and renderer git-identity routing occur 
 
 Rejected. It cannot authoritatively replace an SSH host scope and leaves deleted SSH lineage behind. The wire response and renderer replacement scope must both name the exact execution host.
 
-### Reuse the sidebar single-flight coalescer
+### Reuse the component sidebar single-flight coalescer
 
-Rejected. It is component-scoped, fire-and-forget, and lacks provider-authority, cancellation, terminal, and preparation semantics. The coordinator wraps the existing provider coalescer without changing its shared key.
+Rejected. It is component-scoped, fire-and-forget, and lacks provider-authority, cancellation, terminal, and preparation semantics. The coordinator instead acquires leases from the shared detected-worktree provider coalescer while preserving its public key shape.
 
 ### Replace direct `Promise.all` with `refreshRuntimeProjectWorktrees`
 

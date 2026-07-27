@@ -21,6 +21,12 @@ import {
   FEATURE_INTERACTION_USAGE_BUCKETS,
   getFeatureInteractionCategory
 } from './feature-interactions'
+import {
+  DAEMON_LIFECYCLE_SESSION_BUCKETS,
+  DAEMON_LIFECYCLE_TRANSITIONS,
+  DAEMON_REPLACE_REASONS,
+  DAEMON_RETIRE_REASONS
+} from './daemon-lifecycle-telemetry'
 import { SETUP_SCRIPT_IMPORT_PROVIDERS } from './setup-script-import-providers'
 import { WORKSPACE_SOURCE_VALUES, type WorkspaceSource } from './workspace-source'
 import { appStarSourceSchema } from './gh-star-source'
@@ -375,6 +381,26 @@ const mainThreadHangDetectedSchema = z
     self_recovered: z.boolean()
   })
   .strict()
+
+// Why: daemon replace/retire lifecycle signal — issue #7936 was undiagnosable without asking a user for daemon.log.
+// Enum-only + bucketed session count so no paths, raw versions, or exact counts reach the wire.
+// The union keeps each reason pinned to its transition, so a death can't be reported as a replace.
+const daemonLifecycleSchema = z.discriminatedUnion('transition', [
+  z
+    .object({
+      transition: z.literal(DAEMON_LIFECYCLE_TRANSITIONS[0]),
+      reason: z.enum(DAEMON_REPLACE_REASONS),
+      live_session_count_bucket: z.enum(DAEMON_LIFECYCLE_SESSION_BUCKETS)
+    })
+    .strict(),
+  z
+    .object({
+      transition: z.literal(DAEMON_LIFECYCLE_TRANSITIONS[1]),
+      reason: z.enum(DAEMON_RETIRE_REASONS),
+      live_session_count_bucket: z.enum(DAEMON_LIFECYCLE_SESSION_BUCKETS)
+    })
+    .strict()
+])
 
 // Rollout signal for granting Codex hook trust via codex app-server RPCs
 // instead of Orca's self-computed trusted_hash. `fallback`/`verify_failed`
@@ -1313,6 +1339,7 @@ export const eventSchemas = {
 
   daemon_start_failed: daemonStartFailedSchema,
   main_thread_hang_detected: mainThreadHangDetectedSchema,
+  daemon_lifecycle: daemonLifecycleSchema,
 
   codex_trust_grant: codexTrustGrantSchema,
 

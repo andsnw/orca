@@ -105,6 +105,14 @@ function parkRestorePolicyFromState(state: {
  * so becomes a retention candidate) yet would otherwise look exempt-free and
  * unmount, orphaning that live shell. tab.ptyId stays in the union in case pane
  * resolution misses it (no layout, no capture).
+ *
+ * Accepted residual: detection is per pane but retention is per TAB — the whole
+ * PaneManager stays mounted, so one exempt leaf also pins its restorable split
+ * siblings, and the retention budget cannot bound exempt tabs. Capping them is
+ * not an option (eviction orphans the live shell); the real fix is making those
+ * pty classes reattachable. Sibling TABS are unaffected — the worktree-level
+ * veto was removed (selectRetentionForceParkedTerminalWorktrees never consults
+ * tab exemptions).
  */
 export function isEvictionExemptTerminalTab(
   tab: ParkableTerminalTabModel,

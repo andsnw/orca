@@ -60,13 +60,12 @@ describe('getTerminalParkingPolicyOverrides', () => {
     expect(getTerminalParkingPolicyOverrides()).toEqual({})
   })
 
-  it('maps the e2e delay to coldParkDelayMs, hotRetainMs, and retentionTtlMs', async () => {
+  it('maps the e2e delay to coldParkDelayMs and hotRetainMs but never the absolute retention TTL', async () => {
     mockE2EConfig = { exposeStore: true, terminalParkingDelayMs: 500, terminalRetentionLimit: null }
     const { getTerminalParkingPolicyOverrides } = await importOverridesModule()
     expect(getTerminalParkingPolicyOverrides()).toEqual({
       coldParkDelayMs: 500,
-      hotRetainMs: 500,
-      retentionTtlMs: 500
+      hotRetainMs: 500
     })
   })
 
@@ -86,13 +85,12 @@ describe('getTerminalParkingPolicyOverrides', () => {
     expect(getTerminalParkingPolicyOverrides()).toEqual({ retentionLimit: 1 })
   })
 
-  it('combines the delay trio with the retention limit when both are set', async () => {
+  it('combines the delay overrides with the retention limit when both are set', async () => {
     mockE2EConfig = { exposeStore: true, terminalParkingDelayMs: 500, terminalRetentionLimit: 1 }
     const { getTerminalParkingPolicyOverrides } = await importOverridesModule()
     expect(getTerminalParkingPolicyOverrides()).toEqual({
       coldParkDelayMs: 500,
       hotRetainMs: 500,
-      retentionTtlMs: 500,
       retentionLimit: 1
     })
   })

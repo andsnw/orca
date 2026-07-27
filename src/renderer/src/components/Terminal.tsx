@@ -93,10 +93,12 @@ import {
 } from './terminal-pane/terminal-hidden-view-parking'
 import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
+  selectForceParkEvictableTabIds,
   selectRetentionForceParkedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-pane/terminal-hidden-worktree-retention'
-import { captureTerminalShutdownBuffersBestEffort } from './terminal-pane/shutdown-buffer-captures'
+import { captureForceParkedWorktreeBuffers } from './terminal-pane/force-park-buffer-capture'
+import { warnTerminalLifecycleAnomaly } from './terminal-pane/terminal-lifecycle-diagnostics'
 import { getTerminalParkingPolicyOverrides } from './terminal-pane/terminal-parking-e2e-overrides'
 import { useColdParkedTerminalPresentation } from './terminal-pane/use-cold-parked-terminal-presentation'
 import {
@@ -950,19 +952,6 @@ function Terminal(): React.JSX.Element | null {
         watcherCoverageByTabId.set(tab.id, covered)
         return covered
       })
-    // Why memoized: same shape as coverage above — the retention pass asks this
-    // for every mounted worktree's tabs, and each call re-reads the store and can
-    // walk the layout tree.
-    const evictionExemptByTabId = new Map<string, boolean>()
-    const tabIsEvictionExempt = (worktreeId: string, tab: TerminalTab): boolean => {
-      const cached = evictionExemptByTabId.get(tab.id)
-      if (cached !== undefined) {
-        return cached
-      }
-      const exempt = isEvictionExemptTerminalTab(tab, worktreeId)
-      evictionExemptByTabId.set(tab.id, exempt)
-      return exempt
-    }
     // Why: a worktree with any watcher-uncoverable tab must never park, or it goes silent for bells/titles/completions (sank the first parking attempt).
     for (const worktreeId of Array.from(nextParkedTerminalWorktreeIds)) {
       if (!worktreeTabsAreWatcherCovered(worktreeId, tabsByWorktree[worktreeId] ?? [])) {
@@ -1000,7 +989,6 @@ function Terminal(): React.JSX.Element | null {
           parkCooldownUntilMs: candidate.parkCooldownUntilMs,
           ordinaryParkingCovers:
             parkEligible && worktreeTabsAreWatcherCovered(candidate.worktreeId, tabs),
-          hasEvictionExemptTab: tabs.some((tab) => tabIsEvictionExempt(candidate.worktreeId, tab)),
           hasPendingSpawnWork: tabs.some(
             (tab) =>
               pendingStartupByTabId[tab.id] !== undefined ||
@@ -1023,23 +1011,37 @@ function Terminal(): React.JSX.Element | null {
         capturedForceParked.delete(id)
       }
     }
+    const repos = useAppStore.getState().repos
     for (const worktreeId of forceParkedWorktreeIds) {
       if (!capturedForceParked.has(worktreeId)) {
-        capturedForceParked.add(worktreeId)
         // Why: serialize buffers while the panes still exist (same registry sleep
-        // uses), so classes with no snapshot source still reveal last-known
-        // content. includeLocalBuffers:false is required here, not optional — a
-        // heap fix must not plant 512KB/pane of scrollback strings in the store
-        // for local worktrees that already have the daemon snapshot.
+        // uses), so SSH classes whose reveal has no local snapshot still show
+        // last-known content. includeLocalBuffers:false is required here, not
+        // optional — a heap fix must not plant 512KB/pane of scrollback strings
+        // in the store for local worktrees that already have the daemon
+        // snapshot; a remote-runtime pane in a local repo likewise needs none,
+        // its reveal repaints from the runtime's own subscribe snapshot.
         // Eviction-exempt tabs never unmount (per-tab exclusion), so they need
         // no pre-unmount capture — skipping spares a serialize+setTabLayout
         // walk on live panes per force-park episode.
-        captureTerminalShutdownBuffersBestEffort(
-          (tabsByWorktree[worktreeId] ?? [])
-            .filter((tab) => !tabIsEvictionExempt(worktreeId, tab))
-            .map((tab) => tab.id),
-          { includeLocalBuffers: false }
+        const worktreeTabs = tabsByWorktree[worktreeId] ?? []
+        const evictableTabIds = selectForceParkEvictableTabIds(worktreeTabs, (tab) =>
+          isEvictionExemptTerminalTab(tab, worktreeId)
         )
+        // Why logged: an all-exempt force-park frees no heap at all (daemon
+        // fail-open makes every local pty exempt), so the budget only holds
+        // while this stays rare — make the degenerate case observable.
+        if (evictableTabIds.length === 0 && worktreeTabs.length > 0) {
+          warnTerminalLifecycleAnomaly('retention force-park freed no panes', {
+            worktreeId,
+            reason: `exemptTabs=${worktreeTabs.length}`
+          })
+        }
+        // Why conditional: a tab whose pane was mid-remount registered no
+        // capture callback, and a later episode is this pass's only retry.
+        if (captureForceParkedWorktreeBuffers({ worktreeId, tabIds: evictableTabIds, repos })) {
+          capturedForceParked.add(worktreeId)
+        }
       }
       nextParkedTerminalWorktreeIds.add(worktreeId)
     }

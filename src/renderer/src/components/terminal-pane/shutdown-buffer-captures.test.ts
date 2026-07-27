@@ -25,4 +25,15 @@ describe('captureTerminalShutdownBuffersBestEffort', () => {
     expect(failed).toHaveBeenCalledWith({ includeLocalBuffers: false })
     expect(succeeded).toHaveBeenCalledWith({ includeLocalBuffers: false })
   })
+
+  it('reports incomplete coverage when a tab throws or has no registered capture', () => {
+    shutdownBufferCaptures.set('registered', vi.fn())
+    shutdownBufferCaptures.set('throwing', () => {
+      throw new Error('layout capture failed')
+    })
+
+    expect(
+      captureTerminalShutdownBuffersBestEffort(['registered', 'throwing', 'unregistered'])
+    ).toEqual({ requested: 3, captured: 1 })
+  })
 })

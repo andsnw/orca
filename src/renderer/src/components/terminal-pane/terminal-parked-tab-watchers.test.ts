@@ -796,6 +796,18 @@ describe('terminal-parked-tab-watchers', () => {
       expect(isEvictionExemptTerminalTab(tab, WORKTREE_ID)).toBe(true)
     })
 
+    // Why: locks the documented residual — detection is per pane, retention is
+    // per tab, so the snapshot-backed first leaf is pinned by its fail-open
+    // sibling instead of parking on its own.
+    it('exempts a split tab even when its other leaf is snapshot-backed', () => {
+      capturePanes([
+        { ptyId: PTY_ID, paneId: 1, leafId: LEAF_ID, drivesTabTitle: true },
+        // Why separator-less: the daemon-fail-open class, restorable by nothing.
+        { ptyId: 'pty-local-detached', paneId: 2, leafId: SECOND_LEAF_ID, drivesTabTitle: false }
+      ])
+      expect(isEvictionExemptTerminalTab({ id: TAB_ID, ptyId: PTY_ID }, WORKTREE_ID)).toBe(true)
+    })
+
     it('exempts a split tab whose second leaf pty comes from the layout fallback', () => {
       mockStoreState.terminalLayoutsByTabId[TAB_ID] = {
         root: {

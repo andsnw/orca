@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
   storeState: {
     pendingStartupByTabId: {} as Record<string, unknown>,
     settings: {} as Record<string, unknown>
-  }
+  },
+  exemptTabIds: new Set<string>()
 }))
 
 vi.mock('../../store', () => ({
@@ -17,7 +18,7 @@ vi.mock('../../store', () => ({
 vi.mock('./terminal-parked-tab-watchers', () => ({
   canWatcherCoverParkedTerminalTab: () => true,
   disposeParkedTerminalWatchersForWorktree: vi.fn(),
-  isEvictionExemptTerminalTab: () => false,
+  isEvictionExemptTerminalTab: (tab: { id: string }) => mocks.exemptTabIds.has(tab.id),
   syncParkedTerminalTabWatchers: vi.fn()
 }))
 
@@ -54,6 +55,7 @@ describe('useTerminalTabColdParking measure-clock contract', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    mocks.exemptTabIds = new Set()
   })
 
   // Why: the worktree layer preserves hiddenSince through a background-measure
@@ -95,5 +97,52 @@ describe('useTerminalTabColdParking measure-clock contract', () => {
       vi.advanceTimersByTime(2)
     })
     expect(result.current).toEqual(new Set(['tab-2']))
+  })
+
+  // Why: a measure window also ends when the user opens the worktree; the
+  // hysteresis is then owed to nobody, so still-hidden background tabs must not
+  // sit out a cool-down (Terminal.tsx clears the worktree clock the same way).
+  it('clears the post-measure cool-down when the worktree becomes visible', () => {
+    const { result, rerender } = renderHook(
+      (args: ReturnType<typeof hookArgs>) => useTerminalTabColdParking(args),
+      { initialProps: hookArgs(false) }
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(TERMINAL_TAB_HOT_RETAIN_MS + 1)
+    })
+    expect(result.current).toEqual(new Set(['tab-2']))
+
+    act(() => {
+      rerender(hookArgs(true))
+    })
+    expect(result.current.size).toBe(0)
+
+    // Measure ends because the worktree went visible: tab-2 is still hidden
+    // (no active group assignment) and re-parks on this very pass.
+    act(() => {
+      vi.advanceTimersByTime(3_000)
+      rerender({ ...hookArgs(false), isWorktreeActive: true })
+    })
+    expect(result.current).toEqual(new Set(['tab-2']))
+  })
+
+  // Why: force-park is the only park that can contain unrestorable ptys, so its
+  // exempt tabs keep their panes — a remount would orphan a live shell.
+  it('keeps eviction-exempt tabs mounted when the worktree is force-parked', () => {
+    mocks.exemptTabIds = new Set(['tab-1'])
+    const { result, rerender } = renderHook(
+      (args: ReturnType<typeof hookArgs> & { isForceParked: boolean }) =>
+        useTerminalTabColdParking(args),
+      { initialProps: { ...hookArgs(false), coldParkTerminalPanes: true, isForceParked: true } }
+    )
+    expect(result.current).toEqual(new Set(['tab-2']))
+
+    // The carve-out is scoped to force-parks: an ordinary worktree park has no
+    // exempt tabs to protect, so it evicts both.
+    act(() => {
+      rerender({ ...hookArgs(false), coldParkTerminalPanes: true, isForceParked: false })
+    })
+    expect(result.current).toEqual(new Set(['tab-1', 'tab-2']))
   })
 })

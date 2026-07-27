@@ -3,6 +3,7 @@ import { TERMINAL_WORKTREE_PARK_DELAY_MS } from './terminal-hidden-view-parking'
 import {
   TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
   isEvictionExemptTerminalPty,
+  selectForceParkEvictableTabIds,
   selectRetentionForceParkedTerminalWorktrees,
   type TerminalWorktreeRetentionCandidate
 } from './terminal-hidden-worktree-retention'
@@ -38,7 +39,6 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
       shouldMeasureHiddenWorktree: false,
       hasActivityTerminalPortal: false,
       ordinaryParkingCovers: false,
-      hasEvictionExemptTab: false,
       hasPendingSpawnWork: false,
       ...partial
     }
@@ -79,13 +79,29 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
     ).toEqual(new Set(['wt-1', 'wt-2']))
   })
 
-  it('force-parks past the TTL even under the limit, but never the last-active candidate', () => {
+  it('force-parks past the TTL even under the limit, sparing a last-active candidate inside it', () => {
     const worktrees = [
       retentionCandidate('wt-old', nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS),
       retentionCandidate('wt-recent', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS)
     ]
     expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees })).toEqual(
       new Set(['wt-old'])
+    )
+  })
+
+  // Why: the last-active exemption keeps the warm cap's "return is always instant"
+  // promise, but carrying it into the eviction clock made "none past 45 minutes"
+  // false — a lone hidden un-parkable worktree stayed mounted for the whole session.
+  it('force-parks the last-active candidate once it passes the TTL (the exemption bounds the cap, not the clock)', () => {
+    const lone = [retentionCandidate('wt-lone', nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS)]
+    expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees: lone })).toEqual(
+      new Set(['wt-lone'])
+    )
+    const insideTtl = [
+      retentionCandidate('wt-lone', nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS + 1)
+    ]
+    expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees: insideTtl })).toEqual(
+      new Set()
     )
   })
 
@@ -128,19 +144,6 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
     ).toEqual(new Set(['wt-measured']))
   })
 
-  it('force-parks worktrees with eviction-exempt tabs (the tabs, not the worktree, are exempt)', () => {
-    // Why: one exempt tab must not pin co-located un-parkable tabs forever;
-    // the exempt tabs' panes survive via the per-tab exclusion instead.
-    const aged = nowMs - TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
-    const worktrees = [
-      retentionCandidate('wt-exempt', aged, { hasEvictionExemptTab: true }),
-      retentionCandidate('wt-recent', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS)
-    ]
-    expect(selectRetentionForceParkedTerminalWorktrees({ ...base, worktrees })).toEqual(
-      new Set(['wt-exempt'])
-    )
-  })
-
   it('is idempotent and only grows as time advances (flip-loop dwell)', () => {
     const worktrees = [
       retentionCandidate('wt-1', nowMs - TERMINAL_WORKTREE_PARK_DELAY_MS - 3),
@@ -172,5 +175,21 @@ describe('selectRetentionForceParkedTerminalWorktrees', () => {
         expect(later.has(id)).toBe(true)
       }
     }
+  })
+})
+
+describe('selectForceParkEvictableTabIds', () => {
+  const tabs = [{ id: 'tab-exempt' }, { id: 'tab-evictable' }]
+
+  it('drops eviction-exempt tabs from the capture and unmount set', () => {
+    expect(selectForceParkEvictableTabIds(tabs, (tab) => tab.id === 'tab-exempt')).toEqual([
+      'tab-evictable'
+    ])
+  })
+
+  // Why: an all-exempt worktree still reports as force-parked while freeing nothing —
+  // the degenerate case a fleet-wide daemon fail-open produces, which the host logs.
+  it('yields nothing when every tab is exempt', () => {
+    expect(selectForceParkEvictableTabIds(tabs, () => true)).toEqual([])
   })
 })

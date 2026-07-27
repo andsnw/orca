@@ -250,6 +250,12 @@ import {
 } from './ssh-reattach-model-restore'
 import { readInFlightCommandCodeTurn } from './parked-terminal-command-status'
 import {
+  cancelCommandCodeDoneSettle,
+  openCommandCodeDoneSettle,
+  setCommandCodeDoneSettleExecutor
+} from './command-code-done-settle'
+import { isTerminalTabParked } from './terminal-parked-watcher-registry'
+import {
   getExecutionHostIdForWorktree,
   getSettingsForWorktreeRuntimeOwner
 } from '@/lib/worktree-runtime-owner'
@@ -305,7 +311,6 @@ const pendingSpawnByPaneKey = new Map<string, Promise<string | null>>()
 const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
 const REMOTE_PTY_ID_PREFIX = 'remote:'
 const PTY_CONNECT_DIAG_LIMIT = 200
-const COMMAND_CODE_OUTPUT_DONE_SETTLE_MS = 1500
 const SSH_SHELL_READY_STARTUP_FALLBACK_MS = 1500
 const MANUAL_AGENT_COMMAND_MAX_CHARS = 4096
 const STARTUP_DRAFT_PASTE_QUIET_MS = 1500
@@ -1013,6 +1018,10 @@ export function connectPanePty(
   // settles after remount must not remount its already-replaced successor.
   const terminalRecoveryGeneration = captureTerminalPaneRecoveryGeneration(deps.tabId)
   const terminalRecoveryInstance = registerTerminalPaneRecoveryInstance(deps.tabId)
+  // Why sampled here: the host disposes this tab's park watcher in the effect
+  // that follows this mount, so connect time is the only moment a pane can tell
+  // a reveal remount from an in-place reattach.
+  let mountFollowsTerminalPark = isTerminalTabParked(deps.tabId)
   exposeE2eTerminalPtyOutputDebug()
   let disposed = false
   const structuralReplayCoordinator = createTerminalStructuralReplayCoordinator(pane.terminal)
@@ -2753,31 +2762,19 @@ export function connectPanePty(
     )
   }
 
-  let commandCodeOutputDoneTimer: ReturnType<typeof setTimeout> | null = null
-  const clearCommandCodeOutputDoneTimer = (): void => {
-    if (commandCodeOutputDoneTimer !== null) {
-      clearTimeout(commandCodeOutputDoneTimer)
-      commandCodeOutputDoneTimer = null
-    }
-  }
-  const scheduleCommandCodeOutputDoneStatus = (prompt: string): void => {
-    clearCommandCodeOutputDoneTimer()
-    const normalizedPrompt = prompt.trim()
-    if (!normalizedPrompt) {
-      return
-    }
-    // Why: Command Code keeps rendering the composer while tools run. Only
-    // complete the row if no active status repaint arrives during this window.
-    commandCodeOutputDoneTimer = setTimeout(() => {
-      commandCodeOutputDoneTimer = null
-      if (disposed) {
-        return
-      }
-      const currentState = useAppStore.getState()
+  // Why the settle window lives outside this binding: park unmounts the pane
+  // mid-settle, so a pane-owned timer would be cancelled with nothing left to
+  // complete the turn — the row would stick at 'working'. Only the row write
+  // (routing + title slot) is pane-local; the deadline transfers to whichever
+  // owner (parked watcher or remounted pane) holds the pane next.
+  const releaseCommandCodeDoneSettleExecutor = setCommandCodeDoneSettleExecutor(
+    cacheKey,
+    (normalizedPrompt) => {
       const routing = resolveCurrentAgentStatusRouting()
       if (!routing) {
         return
       }
+      const currentState = useAppStore.getState()
       const currentEntry = currentState.agentStatusByPaneKey[cacheKey]
       if (currentEntry?.agentType !== 'command-code' || currentEntry.state !== 'working') {
         return
@@ -2798,7 +2795,18 @@ export function connectPanePty(
         undefined,
         routing
       )
-    }, COMMAND_CODE_OUTPUT_DONE_SETTLE_MS)
+    }
+  )
+  const clearCommandCodeOutputDoneTimer = (): void => cancelCommandCodeDoneSettle(cacheKey)
+  const scheduleCommandCodeOutputDoneStatus = (prompt: string): void => {
+    const normalizedPrompt = prompt.trim()
+    if (!normalizedPrompt) {
+      cancelCommandCodeDoneSettle(cacheKey)
+      return
+    }
+    // Why: Command Code keeps rendering the composer while tools run. Only
+    // complete the row if no active status repaint arrives during this window.
+    openCommandCodeDoneSettle(cacheKey, normalizedPrompt)
   }
 
   const observeTerminalGitHubPRLink = createTerminalGitHubPRLinkDetector()
@@ -7414,12 +7422,18 @@ export function connectPanePty(
           return snapshot
         }
       )
+      // Why consume-once: only the first reattach of a reveal remount may pay
+      // the probe; a later in-place reconnect on this same mount must not buy a
+      // second timeout before the relay paint.
+      const revealFollowsTerminalPark =
+        mountFollowsTerminalPark && connectResult?.isReattach === true
+      mountFollowsTerminalPark = false
       // Why: a relay restart empties the replay buffer, but main's model may
-      // still hold the session — an SSH reattach probes it even with no replay
+      // still hold the session — a park-reveal probes it even with no replay
       // so the reveal is never blank when main has content. Prefetched (before
       // the payload task) so the coordinator route covers the paint.
       let prefetchedSshModelSnapshot: PtyBufferSnapshot | null = null
-      if (!hasStructuralReplay && connectResult?.isReattach) {
+      if (revealFollowsTerminalPark && !hasStructuralReplay) {
         prefetchedSshModelSnapshot = await fetchSshMainModelReattachSnapshot()
         if (!isCurrentReattachPayload()) {
           return false
@@ -7467,12 +7481,13 @@ export function connectPanePty(
             }
           }
         } else if (connectResult?.replay || prefetchedSshModelSnapshot) {
-          // Deliberate: even with a relay replay in hand, ordinary SSH reattach probes
-          // the model once (bounded by the probe timeout) — the renderer cannot tell a
-          // park-reveal from a relay restart here, and the 100KiB relay tail loses
-          // scrollback the model still holds. Memoized, so this is never a second probe.
-          const modelSnapshot =
-            prefetchedSshModelSnapshot ?? (await fetchSshMainModelReattachSnapshot())
+          // Why scoped to a park-reveal: the 100KiB relay tail loses scrollback the
+          // model still holds, but an in-place reattach (network reconnect, wake,
+          // reload) already has that replay in hand, so probing would only delay its
+          // paint by the timeout. Memoized, so this is never a second probe.
+          const modelSnapshot = revealFollowsTerminalPark
+            ? (prefetchedSshModelSnapshot ?? (await fetchSshMainModelReattachSnapshot()))
+            : null
           if (!isCurrentReattachPayload()) {
             return
           }
@@ -8438,7 +8453,9 @@ export function connectPanePty(
       pendingTerminalInputWrite = null
       interruptInference.dispose()
       clearTitleOnlyInterruptTimer()
-      clearCommandCodeOutputDoneTimer()
+      // Why release, not cancel: the pending settle belongs to the turn, not to
+      // this pane — a park mid-settle hands it to the parked watcher instead.
+      releaseCommandCodeDoneSettleExecutor()
       if (shiftEnterReconfirmTimer !== null) {
         clearTimeout(shiftEnterReconfirmTimer)
         shiftEnterReconfirmTimer = null

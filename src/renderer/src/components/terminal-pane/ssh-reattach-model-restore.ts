@@ -37,9 +37,9 @@ export async function resolveSshReattachModelSnapshotWithTimeout<T>(
  * main's headless model is trusted: a 'renderer'-sourced snapshot serializes a
  * mounted xterm, which no longer exists once the pane parked — anything but a
  * non-empty headless snapshot degrades to the relay replay, never a blank paint.
- * Emptiness is judged on the COMPOSED paint payload (scrollback + screen +
- * escape tail): an alt-screen snapshot can carry all content in scrollbackAnsi
- * with an empty screen frame.
+ * Emptiness is judged on the composed CONTENT (scrollback + screen): an
+ * alt-screen snapshot can carry all content in scrollbackAnsi with an empty
+ * screen frame.
  */
 export function decideSshReattachPaintSource(args: {
   ptyId: string
@@ -52,11 +52,10 @@ export function decideSshReattachPaintSource(args: {
   if (!args.snapshot || args.snapshot.source !== 'headless') {
     return 'relay-replay'
   }
-  const composedLength =
-    (args.snapshot.scrollbackAnsi?.length ?? 0) +
-    args.snapshot.data.length +
-    (args.snapshot.pendingEscapeTailAnsi?.length ?? 0)
-  return composedLength === 0 ? 'relay-replay' : 'main-model-snapshot'
+  // Why the escape tail is excluded: a dangling mid-escape is not content — a
+  // model holding only one paints a blank pane, which this gate forbids.
+  const contentLength = (args.snapshot.scrollbackAnsi?.length ?? 0) + args.snapshot.data.length
+  return contentLength === 0 ? 'relay-replay' : 'main-model-snapshot'
 }
 
 /** Skip the snapshot fetch entirely when the paint could never use it. */

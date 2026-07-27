@@ -114,17 +114,28 @@ describe('decideSshReattachPaintSource', () => {
     }
   })
 
-  it('judges emptiness on the composed payload, not the screen frame alone', () => {
+  it('judges emptiness on the composed content, not the screen frame alone', () => {
     // Why: an alt-screen model snapshot can hold all content in scrollbackAnsi
-    // with an empty screen; a dangling escape tail alone must also paint.
-    for (const snapshot of [
-      { data: '', scrollbackAnsi: 'history', source: 'headless' as const },
-      { data: '', pendingEscapeTailAnsi: '\x1b[', source: 'headless' as const }
-    ]) {
-      expect(
-        decideSshReattachPaintSource({ ptyId: SSH_PTY_ID, sshParkingEnabled: true, snapshot })
-      ).toBe('main-model-snapshot')
-    }
+    // with an empty screen.
+    expect(
+      decideSshReattachPaintSource({
+        ptyId: SSH_PTY_ID,
+        sshParkingEnabled: true,
+        snapshot: { data: '', scrollbackAnsi: 'history', source: 'headless' as const }
+      })
+    ).toBe('main-model-snapshot')
+  })
+
+  it('treats a dangling escape tail alone as unpaintable content', () => {
+    // Why: an incomplete escape sequence renders nothing, so painting it would
+    // blank the pane over a relay replay that still holds the session.
+    expect(
+      decideSshReattachPaintSource({
+        ptyId: SSH_PTY_ID,
+        sshParkingEnabled: true,
+        snapshot: { data: '', pendingEscapeTailAnsi: '\x1b[', source: 'headless' as const }
+      })
+    ).toBe('relay-replay')
   })
 
   it('never upgrades when the kill switch is off or the pty is not SSH', () => {

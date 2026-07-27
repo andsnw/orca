@@ -21,11 +21,13 @@ export const shutdownBufferCaptures = new Map<
   (options?: ShutdownBufferCaptureOptions) => void
 >()
 
-/** Capture every mounted tab without letting one layout failure abort retention. */
+/** Capture every mounted tab without letting one layout failure abort retention.
+ *  Reports coverage so a caller can decide whether the episode is retryable. */
 export function captureTerminalShutdownBuffersBestEffort(
   tabIds: readonly string[],
   options?: ShutdownBufferCaptureOptions
-): void {
+): { requested: number; captured: number } {
+  let captured = 0
   for (const tabId of tabIds) {
     const capture = shutdownBufferCaptures.get(tabId)
     if (!capture) {
@@ -33,8 +35,10 @@ export function captureTerminalShutdownBuffersBestEffort(
     }
     try {
       capture(options)
+      captured += 1
     } catch {
       // Buffer capture is optional recovery evidence; parking must still commit.
     }
   }
+  return { requested: tabIds.length, captured }
 }

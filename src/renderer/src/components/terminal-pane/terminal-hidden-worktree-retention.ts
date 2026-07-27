@@ -8,12 +8,18 @@ import {
   type TerminalColdParkPolicyOverrides
 } from './terminal-hidden-view-parking'
 
-// Why these sizes (C1, DESIGN.md §2): a retained hidden pane costs a measured
-// ~2.5MB of V8 heap at the 5k-row default scrollback and ~19MB at 50k (plus
-// per-pane queues), not the ~4-5MB per WORKTREE the warm cap assumed — so
-// un-parkable worktrees (pty classes parking can't restore) get a hard
-// retention budget: at most 12 stay mounted while hidden, and none past 45
-// minutes, evicted least-recently-hidden first via force-park.
+// Why these sizes (C1): a retained hidden pane costs a measured ~2.5MB of V8
+// heap at the 5k-row default scrollback and ~19MB at 50k (plus per-pane
+// queues), not the ~4-5MB per WORKTREE the warm cap assumed — so un-parkable
+// worktrees (pty classes parking can't restore) get a retention budget: at most
+// 12 stay mounted while hidden and none past 45 minutes, evicted
+// least-recently-hidden first via force-park. The TTL is absolute: the
+// last-active exemption bounds the cap, never the clock.
+// NOT covered by this bound: eviction-exempt TABS (isEvictionExemptTerminalPty
+// — live local ptys a remount would respawn, orphaning the shell). Their panes
+// stay mounted through a force-park at any age, so a fleet-wide daemon
+// fail-open can leave the budget freeing nothing; Terminal.tsx logs that
+// degenerate case rather than pretending the bound held.
 export const TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT = 12
 export const TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS = 45 * 60_000
 
@@ -46,8 +52,6 @@ export type TerminalWorktreeRetentionCandidate = {
   parkCooldownUntilMs?: number | null
   /** Ordinary cold parking can evict this worktree (park-eligible AND watcher-coverable) — the warm cap bounds it already. */
   ordinaryParkingCovers: boolean
-  /** See isEvictionExemptTerminalTab. */
-  hasEvictionExemptTab: boolean
   /** Pending startup or activation spawn — a mount is imminent; never evict. */
   hasPendingSpawnWork: boolean
 }
@@ -60,9 +64,11 @@ export type TerminalWorktreeRetentionCandidate = {
  * do NOT veto the worktree: they keep their mounted panes via the per-tab
  * exclusion (Activity-portal pattern) while sibling tabs unmount, so one
  * exempt tab can no longer pin co-located remote-runtime tabs forever.
- * Ranking reuses the hot-retain machinery, so the last-active exemption and
- * deterministic ties hold here too, and the verdict changes only at deadlines
- * or on real state transitions (no new flip-loop inputs).
+ * Ranking reuses the hot-retain machinery, so deterministic ties hold here too,
+ * and the verdict changes only at deadlines or on real state transitions (no
+ * new flip-loop inputs). The last-active exemption it carries spares one
+ * worktree from the CAP only — the TTL below overrides it, else a lone hidden
+ * un-parkable worktree would stay mounted for the whole session.
  */
 export function selectRetentionForceParkedTerminalWorktrees(
   args: {
@@ -92,9 +98,28 @@ export function selectRetentionForceParkedTerminalWorktrees(
     }
     candidates.push({ id: worktree.worktreeId, hiddenSinceMs: worktree.hiddenSinceMs })
   }
-  return selectIdsBeyondHotRetain(candidates, {
+  const retentionTtlMs = args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS
+  const forceParkedIds = selectIdsBeyondHotRetain(candidates, {
     nowMs: args.nowMs,
-    hotRetainMs: args.retentionTtlMs ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_TTL_MS,
+    hotRetainMs: retentionTtlMs,
     hotRetainLimit: args.retentionLimit ?? TERMINAL_HIDDEN_WORKTREE_RETENTION_LIMIT
   })
+  // Why re-applied here: selectIdsBeyondHotRetain spares the last-active id from
+  // its clock too, which is right for the warm cap (instant return after a
+  // meeting) but makes "none past 45 minutes" false for a lone hidden worktree.
+  for (const candidate of candidates) {
+    if (args.nowMs - candidate.hiddenSinceMs >= retentionTtlMs) {
+      forceParkedIds.add(candidate.id)
+    }
+  }
+  return forceParkedIds
+}
+
+// Why exported: an all-exempt force-park frees nothing, and that degenerate
+// case is only observable if the empty selection is a value the host can test.
+export function selectForceParkEvictableTabIds<T extends { id: string }>(
+  tabs: readonly T[],
+  isExempt: (tab: T) => boolean
+): string[] {
+  return tabs.filter((tab) => !isExempt(tab)).map((tab) => tab.id)
 }

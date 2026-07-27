@@ -148,6 +148,11 @@ export function useTerminalTabColdParking(args: {
       }
       wasMeasuringHiddenWorktreeRef.current = false
     }
+    // Why: mirrors Terminal.tsx's worktree clock — a visible worktree ends the
+    // measure episode outright, so no re-park cool-down is owed.
+    if (isWorktreeActive) {
+      measureParkCooldownUntilRef.current = null
+    }
 
     const candidates: TerminalTabColdParkCandidate[] = terminalTabs.map((terminalTab) => {
       const assignment = assignments.get(terminalTab.id)

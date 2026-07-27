@@ -10,10 +10,11 @@ import { dispatchTerminalCommandFinishedEvent } from '@/hooks/terminal-command-f
 import { resolveLiveAgentStatusConnectionRouting } from '@/lib/agent-status-connection-ownership'
 import { getConnectionIdFromState } from '@/lib/connection-owner-resolution'
 import { useAppStore } from '@/store'
-
-// Mirrors pty-connection.ts COMMAND_CODE_OUTPUT_DONE_SETTLE_MS — the settle window must be
-// identical whether the pane is mounted or parked, or park/reveal changes completion timing.
-const COMMAND_CODE_OUTPUT_DONE_SETTLE_MS = 1500
+import {
+  cancelCommandCodeDoneSettle,
+  openCommandCodeDoneSettle,
+  setCommandCodeDoneSettleExecutor
+} from './command-code-done-settle'
 
 export type ParkedTerminalCommandStatusPolicy = {
   onCommandFinished: (bestEffortExitCode: number | null) => void
@@ -44,17 +45,7 @@ export function createParkedTerminalCommandStatusPolicy(options: {
 }): ParkedTerminalCommandStatusPolicy {
   const { ptyId, worktreeId, tabId, paneId, paneKey } = options
   let disposed = false
-  let commandCodeOutputDoneTimer: ReturnType<typeof setTimeout> | null = null
-  // Non-null exactly while a done-settle timer pends; lets dispose flush the settle.
-  let pendingCommandCodeDonePrompt: string | null = null
-
-  const clearCommandCodeOutputDoneTimer = (): void => {
-    if (commandCodeOutputDoneTimer !== null) {
-      clearTimeout(commandCodeOutputDoneTimer)
-      commandCodeOutputDoneTimer = null
-    }
-    pendingCommandCodeDonePrompt = null
-  }
+  const clearCommandCodeOutputDoneTimer = (): void => cancelCommandCodeDoneSettle(paneKey)
 
   const resolveRouting = (): ReturnType<typeof resolveLiveAgentStatusConnectionRouting> => {
     if (disposed) {
@@ -96,8 +87,7 @@ export function createParkedTerminalCommandStatusPolicy(options: {
     state.dropAgentStatus(paneKey)
   }
 
-  // Shared by the settle timer and the dispose flush: complete the row only while it is
-  // still this turn's command-code/working entry.
+  // Complete the row only while it is still this turn's command-code/working entry.
   const settleCommandCodeDone = (normalizedPrompt: string): void => {
     const routing = resolveRouting()
     if (!routing) {
@@ -125,6 +115,15 @@ export function createParkedTerminalCommandStatusPolicy(options: {
       routing
     )
   }
+
+  // Why the shared window: reveal disposes this watcher mid-settle and the remounted pane
+  // cannot re-observe the already-passed idle composer, so the deadline outlives whichever
+  // side owns the row — cancelling would strand 'working', flushing would complete the turn
+  // unrecoverably early (the same-prompt-done guard then drops a genuine working repaint).
+  const releaseCommandCodeDoneSettleExecutor = setCommandCodeDoneSettleExecutor(
+    paneKey,
+    settleCommandCodeDone
+  )
 
   return {
     onCommandFinished: (): void => {
@@ -179,32 +178,19 @@ export function createParkedTerminalCommandStatusPolicy(options: {
     // Port of pty-connection's scheduleCommandCodeOutputDoneStatus: Command Code keeps rendering
     // the composer while tools run, so only complete the row if no active repaint arrives.
     onCommandCodeDone: (prompt: string): void => {
-      clearCommandCodeOutputDoneTimer()
       const normalizedPrompt = prompt.trim()
       if (!normalizedPrompt) {
+        cancelCommandCodeDoneSettle(paneKey)
         return
       }
-      pendingCommandCodeDonePrompt = normalizedPrompt
-      commandCodeOutputDoneTimer = setTimeout(() => {
-        commandCodeOutputDoneTimer = null
-        pendingCommandCodeDonePrompt = null
-        if (disposed) {
-          return
-        }
-        settleCommandCodeDone(normalizedPrompt)
-      }, COMMAND_CODE_OUTPUT_DONE_SETTLE_MS)
+      openCommandCodeDoneSettle(paneKey, normalizedPrompt)
     },
 
     dispose: (): void => {
-      // Why flush, not cancel: reveal disposes mid-settle and the remounted detector cannot
-      // re-observe the already-passed idle composer, so cancelling strands the row at
-      // 'working'. A rare premature 'done' (tool still running behind the composer) only
-      // shortens the settle window; the turn ends at 'done' anyway.
-      const pendingPrompt = disposed ? null : pendingCommandCodeDonePrompt
-      clearCommandCodeOutputDoneTimer()
-      if (pendingPrompt !== null) {
-        settleCommandCodeDone(pendingPrompt)
-      }
+      // Why release, not flush: the settle window belongs to the turn and outlives this
+      // watcher, so the remounted pane inherits the remaining deadline and a working
+      // repaint arriving before it still cancels the completion.
+      releaseCommandCodeDoneSettleExecutor()
       disposed = true
     }
   }

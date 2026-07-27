@@ -175,28 +175,50 @@ describe('createParkedTerminalCommandStatusPolicy', () => {
     policy.dispose()
   })
 
-  // Why: reveal disposes the watcher mid-settle; cancelling would strand the row at
-  // 'working' because the remounted detector never re-observes the idle composer.
-  it('dispose flushes a pending done settle instead of stranding a working row', async () => {
+  // Why: reveal disposes the watcher mid-settle. Flushing would complete the turn early
+  // and the same-prompt-done guard then drops the genuine working repaint, so the window
+  // transfers to the remounted pane instead — the row stays 'working' across the boundary.
+  it('dispose hands the pending settle to the remounted pane instead of completing it early', async () => {
     mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
       state: 'working',
       prompt: 'Fix the spinner',
       agentType: 'command-code'
     })
     const policy = await createPolicy(PTY_ID_LOCAL)
+    const { setCommandCodeDoneSettleExecutor } = await import('./command-code-done-settle')
 
     policy.onCommandCodeDone('Fix the spinner')
+    vi.advanceTimersByTime(DONE_SETTLE_MS - 1)
+    const revealedPaneSettle = vi.fn()
+    setCommandCodeDoneSettleExecutor(PANE_KEY, revealedPaneSettle)
     policy.dispose()
 
-    expect(mockStoreState.setAgentStatus).toHaveBeenCalledWith(
-      PANE_KEY,
-      { state: 'done', prompt: 'Fix the spinner', agentType: 'command-code' },
-      '✳ Build feature',
-      undefined,
-      ROUTING
-    )
+    expect(mockStoreState.setAgentStatus).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(revealedPaneSettle).toHaveBeenCalledExactlyOnceWith('Fix the spinner')
+  })
+
+  // Why: the transferred window is still a settle window — a working repaint from the
+  // revealed pane before the original deadline must cancel it, not race it.
+  it('lets a working repaint after the handoff cancel the transferred settle', async () => {
+    mockStoreState.agentStatusByPaneKey[PANE_KEY] = makeStatusEntry({
+      state: 'working',
+      prompt: 'Fix the spinner',
+      agentType: 'command-code'
+    })
+    const policy = await createPolicy(PTY_ID_LOCAL)
+    const { cancelCommandCodeDoneSettle, setCommandCodeDoneSettleExecutor } =
+      await import('./command-code-done-settle')
+
+    policy.onCommandCodeDone('Fix the spinner')
+    const revealedPaneSettle = vi.fn()
+    setCommandCodeDoneSettleExecutor(PANE_KEY, revealedPaneSettle)
+    policy.dispose()
+    cancelCommandCodeDoneSettle(PANE_KEY)
     vi.advanceTimersByTime(DONE_SETTLE_MS * 2)
-    expect(mockStoreState.setAgentStatus).toHaveBeenCalledTimes(1)
+
+    expect(revealedPaneSettle).not.toHaveBeenCalled()
+    expect(mockStoreState.setAgentStatus).not.toHaveBeenCalled()
   })
 
   it('dispose does not flush a settle a working repaint already cancelled', async () => {

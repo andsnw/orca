@@ -2,7 +2,9 @@ export type HangWatchdogChildLoopConfig = {
   timeoutMs: number
   checkIntervalMs: number
   now: () => number
-  onHangDetected: () => void
+  onHangDetected: (unresponsiveMs: number) => void
+  /** Heartbeats resumed after a detected hang — the main thread was stalled, not deadlocked. */
+  onHangResolved: (unresponsiveMs: number) => void
 }
 
 export type HangWatchdogChildLoop = {
@@ -15,26 +17,34 @@ export function createHangWatchdogChildLoop(
 ): HangWatchdogChildLoop {
   let lastHeartbeatAt = config.now()
   let lastTickAt = config.now()
-  let fired = false
+  let detected = false
   return {
     recordHeartbeat: () => {
-      lastHeartbeatAt = config.now()
+      const now = config.now()
+      if (detected) {
+        detected = false
+        config.onHangResolved(now - lastHeartbeatAt)
+      }
+      lastHeartbeatAt = now
     },
     tick: () => {
-      if (fired) {
-        return
-      }
       const now = config.now()
       const tickGap = now - lastTickAt
+      // Why: advance the tick clock even while a hang is outstanding, or the first tick after the
+      // stall clears reads as a huge gap and gets misread as system sleep.
       lastTickAt = now
+      if (detected) {
+        return
+      }
       // Why: system sleep suspends this process too; a huge tick gap means suspension, not a parent hang, so restart the wait from scratch.
       if (tickGap > config.checkIntervalMs * 3) {
         lastHeartbeatAt = now
         return
       }
-      if (now - lastHeartbeatAt > config.timeoutMs) {
-        fired = true
-        config.onHangDetected()
+      const unresponsiveMs = now - lastHeartbeatAt
+      if (unresponsiveMs > config.timeoutMs) {
+        detected = true
+        config.onHangDetected(unresponsiveMs)
       }
     }
   }

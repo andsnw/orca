@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
   app: appMock
 }))
 
-import { deriveMacAppBundlePath, installMainThreadHangWatchdog } from './main-thread-hang-watchdog'
+import { installMainThreadHangWatchdog } from './main-thread-hang-watchdog'
 
 function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
   const original = process.platform
@@ -39,24 +39,6 @@ function fakeChild() {
     kill: vi.fn()
   }
 }
-
-describe('deriveMacAppBundlePath', () => {
-  it('extracts the .app bundle from the executable path', () => {
-    expect(deriveMacAppBundlePath('/Applications/Orca.app/Contents/MacOS/Orca')).toBe(
-      '/Applications/Orca.app'
-    )
-  })
-
-  it('returns empty for non-bundle executables', () => {
-    expect(deriveMacAppBundlePath('/usr/local/bin/electron')).toBe('')
-  })
-
-  it('picks the innermost bundle when an ancestor directory is named *.app', () => {
-    expect(
-      deriveMacAppBundlePath('/Users/j/my.app/Applications/Orca.app/Contents/MacOS/Orca')
-    ).toBe('/Users/j/my.app/Applications/Orca.app')
-  })
-})
 
 describe('installMainThreadHangWatchdog', () => {
   beforeEach(() => {

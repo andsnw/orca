@@ -1,62 +1,42 @@
-// Forked with ELECTRON_RUN_AS_NODE from the main process. Watches heartbeats
-// from the main thread; if they stop (e.g. the macOS 26 AppKit scene-update
-// deadlock), it records a recovery marker, schedules a relaunch, and SIGKILLs
-// the deadlocked parent. Must never import electron.
-import { spawn } from 'node:child_process'
+// Forked with ELECTRON_RUN_AS_NODE from the main process. Watches heartbeats from the main
+// thread; if they stop (e.g. the macOS 26 AppKit scene-update deadlock) it records a marker so
+// the next launch can report the stall, and rewrites it if the heartbeats come back.
+//
+// Why no kill: a deadlocked main thread has already lost whatever sat in the persistence debounce
+// window, so killing it recovers nothing the user could not recover by force-quitting. A false
+// positive, though, would SIGKILL a live main thread that was merely blocked — most plausibly on
+// I/O, i.e. exactly when writes are in flight. All of the downside sits in the misfire, so this
+// measures first: `selfRecovered` counts the stalls a killer would have gotten wrong.
+//
+// Must never import electron.
 import { createHangWatchdogChildLoop } from './hang-watchdog-child-loop'
-import { writeHangRecoveryMarker } from './hang-recovery-marker'
+import { writeHangDetectionMarker } from './hang-detection-marker'
 
 const DEFAULT_TIMEOUT_MS = 45_000
 const DEFAULT_CHECK_INTERVAL_MS = 5_000
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-export function recoverFrozenParent(options: {
+export function recordHangObservation(options: {
   parentPid: number
-  appBundlePath: string
   markerPath: string
   unresponsiveMs: number
+  selfRecovered: boolean
 }): void {
+  if (!options.markerPath) {
+    return
+  }
   try {
-    writeHangRecoveryMarker(options.markerPath, {
+    writeHangDetectionMarker(options.markerPath, {
       detectedAt: Date.now(),
       parentPid: options.parentPid,
-      unresponsiveMs: options.unresponsiveMs
+      unresponsiveMs: options.unresponsiveMs,
+      selfRecovered: options.selfRecovered
     })
   } catch {
-    // Why: recovery must proceed even if the marker cannot be written.
+    // Why: telemetry is best-effort; a marker that cannot be written must not take down the watchdog.
   }
-  if (options.appBundlePath) {
-    // Why: `open` propagates this process's env to the relaunched app; ELECTRON_RUN_AS_NODE would boot it as bare Node and it would exit immediately (live-repro'd), and leaked watchdog config would misconfigure the relaunched app's own watchdog.
-    const relauncherEnv = { ...process.env }
-    delete relauncherEnv.ELECTRON_RUN_AS_NODE
-    for (const key of Object.keys(relauncherEnv)) {
-      if (key.startsWith('ORCA_HANG_WATCHDOG_')) {
-        delete relauncherEnv[key]
-      }
-    }
-    // Why: the relauncher must outlive both this watchdog and the killed app, and must wait for the pid to die so the single-instance lock is free before open.
-    spawn(
-      '/bin/sh',
-      [
-        '-c',
-        `while kill -0 ${options.parentPid} 2>/dev/null; do sleep 0.2; done; sleep 1; open ${shellQuote(options.appBundlePath)}`
-      ],
-      { detached: true, stdio: 'ignore', env: relauncherEnv }
-    ).unref()
-  }
-  try {
-    process.kill(options.parentPid, 'SIGKILL')
-  } catch {
-    // Parent already exited on its own.
-  }
-  process.exit(0)
 }
 
 function runWatchdog(parentPid: number): void {
-  const appBundlePath = process.env.ORCA_HANG_WATCHDOG_APP_BUNDLE_PATH ?? ''
   const markerPath = process.env.ORCA_HANG_WATCHDOG_MARKER_PATH ?? ''
   const timeoutMs = Number(process.env.ORCA_HANG_WATCHDOG_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS
   const checkIntervalMs =
@@ -66,8 +46,11 @@ function runWatchdog(parentPid: number): void {
     timeoutMs,
     checkIntervalMs,
     now: () => Date.now(),
-    onHangDetected: () =>
-      recoverFrozenParent({ parentPid, appBundlePath, markerPath, unresponsiveMs: timeoutMs })
+    onHangDetected: (unresponsiveMs) =>
+      recordHangObservation({ parentPid, markerPath, unresponsiveMs, selfRecovered: false }),
+    // Why: rewriting the marker keeps one observation per stall rather than two rows to reconcile.
+    onHangResolved: (unresponsiveMs) =>
+      recordHangObservation({ parentPid, markerPath, unresponsiveMs, selfRecovered: true })
   })
 
   process.on('message', (message) => {

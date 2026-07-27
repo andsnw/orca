@@ -13807,10 +13807,5 @@
       "certificateChallengeUnavailable": "This certificate request is no longer available. Retry the page to request a new one.",
       "certificateProceedFailed": "Orca could not approve this certificate request. Retry the page and try again."
     }
-  },
-  "hangWatchdog": {
-    "recoveredNotice": {
-      "body": "Orca はシステムのフリーズから復旧し、再起動しました"
-    }
   }
 }

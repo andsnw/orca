@@ -1,16 +1,9 @@
 import { fork, type ChildProcess } from 'node:child_process'
 import { app } from 'electron'
 import { resolveHangWatchdogEntryPath } from './hang-watchdog-entry-path'
-import { hangRecoveryMarkerPath } from './hang-recovery-marker'
+import { hangDetectionMarkerPath } from './hang-detection-marker'
 
 const HEARTBEAT_INTERVAL_MS = 2_000
-
-export function deriveMacAppBundlePath(execPath: string): string {
-  const marker = '.app/'
-  // Why: the executable sits under <bundle>/Contents/MacOS, so the last .app is the bundle — an ancestor directory named *.app must not win.
-  const index = execPath.lastIndexOf(marker)
-  return index === -1 ? '' : execPath.slice(0, index + marker.length - 1)
-}
 
 export type MainThreadHangWatchdogHandle = {
   stop: () => void
@@ -18,8 +11,9 @@ export type MainThreadHangWatchdogHandle = {
 }
 
 // Why: macOS 26 scene-backed AppKit windows can deadlock the main thread inside
-// FrontBoardServices with no crash and no event loop left to self-report. A
-// plain-Node sibling process watches heartbeats and force-relaunches the app.
+// FrontBoardServices with no crash and no event loop left to self-report. A plain-Node sibling
+// process watches heartbeats and records the stall so the next launch can report it. It observes
+// only — see main-thread-hang-watchdog-entry.ts for why it does not kill the parent.
 export function installMainThreadHangWatchdog(options: {
   userDataPath: string
 }): MainThreadHangWatchdogHandle | null {
@@ -39,8 +33,7 @@ export function installMainThreadHangWatchdog(options: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
         ORCA_HANG_WATCHDOG_PARENT_PID: String(process.pid),
-        ORCA_HANG_WATCHDOG_APP_BUNDLE_PATH: deriveMacAppBundlePath(process.execPath),
-        ORCA_HANG_WATCHDOG_MARKER_PATH: hangRecoveryMarkerPath(options.userDataPath)
+        ORCA_HANG_WATCHDOG_MARKER_PATH: hangDetectionMarkerPath(options.userDataPath)
       }
     })
   } catch (error) {

@@ -2,7 +2,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import os from 'node:os'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, type Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, type Tray } from 'electron'
 import { electronApp, is } from '@electron-toolkit/utils'
 import * as QRCode from 'qrcode'
 import {
@@ -216,10 +216,9 @@ import {
 import { recordDurableCrashBreadcrumb } from './crash-reporting/durable-crash-breadcrumb'
 import { installMainThreadHangWatchdog } from './hang-watchdog/main-thread-hang-watchdog'
 import {
-  consumeHangRecoveryMarker,
-  hangRecoveryMarkerPath
-} from './hang-watchdog/hang-recovery-marker'
-import { translateMain } from './i18n/main-i18n'
+  consumeHangDetectionMarker,
+  hangDetectionMarkerPath
+} from './hang-watchdog/hang-detection-marker'
 import { getMainProcessLifecycleIdentity } from './crash-reporting/main-process-lifecycle-identity'
 import { CrashReportStore } from './crash-reporting/crash-report-store'
 import {
@@ -1783,11 +1782,14 @@ function shouldSuppressCodexAutoApprovalSyntheticTitleFromHook(args: {
 app.whenReady().then(async () => {
   logStartupMilestone('app-ready')
   installMainThreadHangWatchdog({ userDataPath: getCanonicalUserDataPath() })
-  const hangRecovery = consumeHangRecoveryMarker(hangRecoveryMarkerPath(getCanonicalUserDataPath()))
-  if (hangRecovery) {
-    recordDurableCrashBreadcrumb('main_thread_hang_recovered', {
-      unresponsiveMs: hangRecovery.unresponsiveMs,
-      previousPid: hangRecovery.parentPid
+  const hangDetection = consumeHangDetectionMarker(
+    hangDetectionMarkerPath(getCanonicalUserDataPath())
+  )
+  if (hangDetection) {
+    recordDurableCrashBreadcrumb('main_thread_hang_detected', {
+      unresponsiveMs: hangDetection.unresponsiveMs,
+      previousPid: hangDetection.parentPid,
+      selfRecovered: hangDetection.selfRecovered
     })
   }
   // Why: install certificate decisions before any webview or headless window issues its first TLS request.
@@ -2214,21 +2216,6 @@ app.whenReady().then(async () => {
   await ensureMainI18n()
   await setMainUiLanguage(store.getSettings().uiLanguage)
   logStartupMilestone('i18n-ready')
-
-  if (hangRecovery) {
-    // Why: translateMain falls back to English until i18n is ready, so the recovery notice must wait for it.
-    try {
-      new Notification({
-        title: 'Orca',
-        body: translateMain(
-          'hangWatchdog.recoveredNotice.body',
-          'Orca recovered from a system freeze and restarted'
-        )
-      }).show()
-    } catch {
-      // Notification is best-effort; the breadcrumb already records the recovery.
-    }
-  }
 
   registerAppMenu({
     appMenuLabel: devInstanceIdentity.name,

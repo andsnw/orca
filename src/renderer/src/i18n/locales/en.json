@@ -13807,10 +13807,5 @@
     "sidebar": {
       "label": "Agent Dashboard"
     }
-  },
-  "hangWatchdog": {
-    "recoveredNotice": {
-      "body": "Orca recovered from a system freeze and restarted"
-    }
   }
 }

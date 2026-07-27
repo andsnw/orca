@@ -1884,6 +1884,16 @@ app.whenReady().then(async () => {
   })
   // Why: telemetry must init before any IPC handler/renderer can call track(); it's a no-op in dev and while TELEMETRY_ENABLED is false, so it's safe early.
   initTelemetry(store)
+  // Why: the breadcrumb alone never leaves the machine — it rides crash reports, and a hang is not
+  // a crash (the app is force-quit, so no report is ever generated). Without this the incidence
+  // number the watchdog exists to produce would sit unread on the user's disk. Must run after
+  // initTelemetry: track() drops silently until the client and store are wired.
+  if (hangDetection) {
+    track('main_thread_hang_detected', {
+      unresponsive_ms: Math.round(hangDetection.unresponsiveMs),
+      self_recovered: hangDetection.selfRecovered
+    })
+  }
   // Why: the trust-grant module is bundled into plain-node CLI entries where
   // the telemetry client cannot load, so the tracker is injected here instead
   // of imported there.

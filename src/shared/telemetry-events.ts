@@ -364,6 +364,18 @@ const agentErrorSchema = z
 // Why: daemon start-failure signal (fleet-wide outage like v1.4.129-rc.1); enum-only so raw stderr never reaches the wire.
 const daemonStartFailedSchema = z.object({ error_class: errorClassSchema }).strict()
 
+// Why: a deadlocked main thread never crashes, so it produces no crash report and no user report
+// beyond "it froze" — incidence has been unmeasurable. `self_recovered` splits stalls that cleared
+// from ones that never did, which is the number that decides whether auto-recovery is ever safe to
+// build: every self-recovered stall is a kill that design would have gotten wrong. `unresponsive_ms`
+// is the observed silence, kept raw so the 45s threshold can be calibrated against real tails.
+const mainThreadHangDetectedSchema = z
+  .object({
+    unresponsive_ms: z.number().int().nonnegative(),
+    self_recovered: z.boolean()
+  })
+  .strict()
+
 // Rollout signal for granting Codex hook trust via codex app-server RPCs
 // instead of Orca's self-computed trusted_hash. `fallback`/`verify_failed`
 // spikes mean the RPC lane is not taking; steady-state ledger skips are not
@@ -1300,6 +1312,7 @@ export const eventSchemas = {
   agent_hook_unattributed: agentHookUnattributedSchema,
 
   daemon_start_failed: daemonStartFailedSchema,
+  main_thread_hang_detected: mainThreadHangDetectedSchema,
 
   codex_trust_grant: codexTrustGrantSchema,
 

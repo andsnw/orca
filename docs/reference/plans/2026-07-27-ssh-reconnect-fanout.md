@@ -4,7 +4,7 @@ Status: implementation-ready design, reconciled with current main
 
 This design was reviewed by multi-model LLM counsel for **two full rounds** (round 1 rewrite of fan-out / host-blind provider selection / terminal cleanup / store-fence gaps; round 2 residual seam audit for epoch boundaries, cancellation settlement, snapshot hydration, authority advance, and disconnect cleanup). It was then reconciled with current main and revised for independent waiter/provider identities, authoritative response construction, contradictory ownership provenance, and timeout retry barriers. Review findings are absorbed into the invariants and rollout plan below; raw counsel artifacts are not part of this PR.
 
-Validated against `origin/main` at `79ec57d045fb395cbe986b39815aedad985f64ca` after rebasing the design branch. Current main includes remote-runtime resume/online recovery (#8255), worktree-owned routing for multi-host projects (#10986), negotiated paired-runtime close intent (#10129), and fail-closed runtime project setup for SSH hosts (#10799). None replaces the direct desktop SSH reconnect path, but each constrains its ownership and lifecycle integration below.
+Validated against `origin/main` at `6943638053861ae8288673e8c90c9f2d9f75ac11` after rebasing the design branch. Current main includes remote-runtime resume/online recovery (#8255), worktree-owned routing for multi-host projects (#10986), negotiated paired-runtime close intent (#10129), fail-closed runtime project setup for SSH hosts (#10799), manual terminal-view parking (#11016), host-correct SSH folder automation with bind-before-publish terminal adoption (#10818), hydration-loop ID indexes (#10891), and runtime terminal output chunking (#10915). None replaces the direct desktop SSH reconnect path, but each constrains its ownership and lifecycle integration below.
 
 Scope: direct SSH reconnect recovery across main, preload, and renderer
 
@@ -104,9 +104,12 @@ pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/worktrees.tes
 pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/useIpcEvents.test.ts -t "clears stale remote PTYs when an SSH connection fully disconnects|waits for the remote workspace client id before dropping self notifications"
 pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/ssh-reconnect-pane-retry.test.ts
 pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/ssh.test.ts src/main/ssh/ssh-channel-multiplexer.test.ts src/renderer/src/runtime/use-remote-runtime-recovery-triggers.test.ts -t "surfaces relay channel loss while the SSH connection remains alive|does not broadcast a premature connected when relay deploy fails|times out after 30s with no response|advances both recovery schedulers"
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-hidden-view-parking.test.ts src/renderer/src/components/terminal-pane/use-manual-terminal-worktree-parking.test.ts src/renderer/src/lib/manual-terminal-worktree-parking.test.ts
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/agent-background-session-launch-host.test.ts src/renderer/src/lib/launch-agent-background-session-remote.test.ts src/renderer/src/hooks/useAutomationDispatchEvents.test.ts src/renderer/src/components/terminal-pane/pty-connection.test.ts
+pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/store/slices/worktree-by-id-index.test.ts src/main/runtime/rpc/terminal-output-frame-chunks-equivalence.test.ts
 ```
 
-Results on `79ec57d04`: 3/3, 1/1, 2/2, 4/4, and 3/3 selected tests passed respectively. Source-contract inspection confirmed the `2R`/`3R` call graph and the dropped host field. This is baseline evidence, not candidate green evidence: this PR contains no runtime implementation. Docker SSH is unnecessary for these disputed design claims because the renderer/main seams express them deterministically.
+Results initially on `79ec57d04`, then rerun after rebasing through `974447175`: 3/3, 1/1, 2/2, 4/4, and 3/3 selected SSH seam tests passed respectively; the three newly relevant parking files passed 39/39. On `1fd0f731f`, the four folder-automation/adoption files passed 516/516. On `694363805`, the hydration-index and output-frame equivalence files passed 25/25. Source-contract inspection confirmed the `2R`/`3R` call graph and the dropped host field; later main changes did not alter those seams. This is baseline evidence, not candidate green evidence: this PR contains no runtime implementation. Docker SSH is unnecessary for these disputed design claims because the renderer/main seams express them deterministically.
 
 Current-main reconciliation:
 
@@ -114,6 +117,10 @@ Current-main reconciliation:
 - #10986 correctly routes an exact worktree by its own host in multi-host projects. Direct reconnect reuses that worktree-specific precedence only after rejecting any contradictory provenance; it never falls back to project-wide repo ambiguity or focused-runtime ownership.
 - #10129 makes capable paired-runtime reasonless close fail closed. Direct SSH cleanup clears transient bindings only: it never emits `session.tabs.close`, retires a tab, or kills a provider PTY.
 - #10799 confirms runtime project setup must refuse `ssh:` rather than act locally. The desktop direct-SSH handler likewise rejects `runtime:` hosts, and runtime-owned SSH rows remain under runtime authority.
+- #11016 parks terminal views without clearing their PTYs. Direct SSH binding cleanup does not invoke parking, close, or layout mutation; the mounted view observes the atomic PTY-state patch independently.
+- #10818 routes folder automation through `getKnownWorktreeById` and ambiguity-aware `getFolderWorkspaceConnectionId`, and publishes agent tabs only after binding the spawned PTY. Direct reconnect uses the same effective folder connection as provenance, rejects mixed ownership, preserves agent state, and never treats an adopted PTY as live under a newer authority without matching binding evidence.
+- #10891 preserves legacy first-wins semantics while indexing ID-only hydration lookups. Direct reconnect must not treat `buildWorktreeByIdIndex` as ownership proof: target hydration and reattach resolve a host-qualified worktree first and fail closed on duplicate or contradictory ownership.
+- #10915 changes runtime output-frame chunking without changing PTY binding, authority, close intent, or hydration ownership. Direct reconnect does not reset output sequence state or reinterpret runtime frames.
 
 ## Invariants
 
@@ -130,7 +137,7 @@ Current-main reconciliation:
 9. If a connected event lacks either component, the renderer performs one bounded `ssh:getState` reconciliation with a per-target arrival watermark. The reply may fill authority only if no newer push event arrived and the stored event/status still matches the initiating event; it cannot transition status or resurrect an older `connected` state. If authority remains unknown, authoritative preparation, retry, sync, and snapshot mutation fail closed with `authority-unknown`; disconnect cleanup remains allowed.
 10. After every await and inside every authoritative store updater, current state must still name the same connected target and exact authority pair.
 11. Supersession is determined by coordinator arrival order and exact equality, never numeric ordering.
-12. On any authority change, before new preparation admission, cancel the target's queued work, locally settle obsolete waiter leases, abort unshared in-flight provider request IDs, mark all late results stale, and retain main-side post-await fences. Terminal finalization for the new authority does not wait for old relay work.
+12. On any authority change, before new preparation admission, cancel the target's queued work, locally settle obsolete waiter leases, send exactly one cancellation for every affected in-flight provider request ID, mark all late results stale, and retain main-side post-await fences. Terminal finalization for the new authority does not wait for old relay work.
 
 ### Host-qualified ownership
 
@@ -333,6 +340,7 @@ Resolution rules:
 - When explicit worktree host is present and no source contradicts it, require it to equal the expected host. Use exact repo-derived ownership only when the explicit worktree host is absent.
 - Require `getExplicitRuntimeEnvironmentIdForWorktree` to be `null`; an explicit runtime owner contradicts direct SSH even when another source names the expected SSH host.
 - Do not use focused-runtime fallback ownership during pre-catalog reconnect. Focus-only local/runtime results and `runtime:unresolved-owner` are ambiguous.
+- Do not use `buildWorktreeByIdIndex`, raw `getKnownWorktreeById`, or another first-wins ID-only lookup as authoritative direct-SSH ownership. Hydration and reattach use an exact host-qualified row or fail closed.
 - Accept a folder workspace only when its effective connection is exactly `targetId`, its execution host is expected, runtime owner is `null`, and all candidate repo/group/workspace provenance agrees.
 - Treat mixed/conflicting folder provenance as contradictory; duplicate same-host owners and unresolved legacy rows are ambiguous/unowned.
 - A parsed live app-SSH PTY can recover a stale-catalog terminal only when no explicit other-host or runtime ownership contradicts it.
@@ -363,10 +371,10 @@ Required behavior:
 - an input key of `(repoId, executionHostId, providerEpoch, connectionGeneration, catalogRevision, authoritative requirement)`;
 - join only a currently running logical repo task with the exact same key;
 - retain the logical key across a first `retrying` timeout and delete it only on a terminal outcome;
-- explicit `complete`, `non-authoritative`, `timed-out`, `canceled`, `stale`, and `rejected` outcomes; and
+- explicit `complete`, `non-authoritative`, `timed-out`, `cancel-budget-exhausted`, `canceled`, `stale`, and `rejected` outcomes; and
 - no console error or degraded count for expected cancellation/supersession.
 
-Each provider invocation has the existing 30-second main-owned deadline. Main creates an `AbortController`, passes its signal to `SshGitProvider.listWorktrees`, and therefore reaches the multiplexer `rpc.cancel` path on timeout. A transient first timeout changes the repo task to `retrying` and requeues it once at the tail of that target's round-robin lane if the full authority remains current. That repo task promise does not settle, and target lineage/token creation does not start, until the retry completes, reaches its second timeout, is invalidated, or becomes non-retryable because the current provider's cancel-debt budget is exhausted. Add cancellation IPC keyed only by `providerRequestId`; authority advance, target invalidation, last-waiter release, and effect teardown abort matching main requests. Queued requests have no provider request ID and cancel without IPC.
+Each provider invocation has the existing 30-second main-owned deadline. Main creates an `AbortController`, passes its signal to `SshGitProvider.listWorktrees`, and therefore reaches the multiplexer `rpc.cancel` path on timeout. A transient first timeout changes the repo task to `retrying` and requeues it once at the tail of that target's round-robin lane if the full authority remains current. That repo task promise does not settle, and target lineage/token creation does not start, until the retry completes, reaches its second timeout, is invalidated, or retry admission terminates as `cancel-budget-exhausted`. Add cancellation IPC keyed only by `providerRequestId`; authority advance, target invalidation, last-waiter release, and effect teardown abort matching main requests. Queued requests have no provider request ID and cancel without IPC.
 
 The first timed-out provider invocation and its leases settle before retry admission. The logical repo task remains pending and acquires a fresh provider request ID plus fresh waiter leases for the retry; preparation waiters never reuse an already-canceled provider identity.
 
@@ -379,7 +387,7 @@ Cancellation uses waiter leases:
 - Main aborts the provider request when that cancellation identity matches or when provider authority is invalidated. It does not reconstruct waiter ownership.
 - Local cancellation returns after waiter settlement and, for the last lease, main provider-promise settlement. `ssh-channel-multiplexer` rejects its local provider promise when it sends fire-and-forget `rpc.cancel`; no relay response is awaited.
 - The scheduler releases the local slot when the underlying provider promise settles locally. The original relay handler may observe abort later, so this metric is not a hard relay-process concurrency claim.
-- Track every locally canceled underlying call as conservative cancel debt on its provider instance. Admission requires `locallyUnsettled + cancelDebt <= DIRECT_SSH_PROVIDER_START_BUDGET` (seven), so five canceled calls permit at most two replacements and repeated cancel/retry cannot create unbounded client-originated work. Debt is not cleared by elapsed time or local promise settlement because neither proves relay completion; it clears only when the owning provider/multiplexer is disposed or replaced. Once the budget is exhausted, further work waits outside the five local slots and the target degrades until a fresh authoritative provider exists. A hard bound on handlers surviving disposal is impossible without a relay acknowledgement, so telemetry states this as a seven-start per-provider budget rather than a total remote-process guarantee.
+- Track every locally canceled underlying call as conservative cancel debt on its provider instance. Admission requires `locallyUnsettled + cancelDebt <= DIRECT_SSH_PROVIDER_START_BUDGET` (seven), so five canceled calls permit at most two replacements and repeated cancel/retry cannot create unbounded client-originated work. Debt is not cleared by elapsed time or local promise settlement because neither proves relay completion; it clears only when the owning provider/multiplexer is disposed or replaced. A logical task denied admission by this budget settles terminally as `cancel-budget-exhausted`; it never waits for provider replacement and never leaves the preparation barrier pending indefinitely. A hard bound on handlers surviving disposal is impossible without a relay acknowledgement, so telemetry states this as a seven-start per-provider budget rather than a total remote-process guarantee.
 
 ```ts
 type DetectedWorktreeRefreshLease = {
@@ -412,6 +420,7 @@ type DirectSshAuthority = {
 type PreparationInput = DirectSshAuthority & {
   catalogRevision: number
   repoRefs: DirectSshGitRepoRef[]
+  authorityRequirement: 'required' | 'allow-metadata-fallback'
   snapshotRevision?: number
   reason: 'reconnect' | 'initial-hydration' | 'workspace-snapshot' | 'wake-refresh'
 }
@@ -428,6 +437,8 @@ type DirectSshReconnectCoordinator = {
 ```
 
 There is no global reconnect wave and no authority-long prepared-outcome cache. Transient per-tab pending/live-binding state is separate and exists only to settle or re-arm terminal recovery.
+
+`replaceAuthority` compares the complete authority tuple. An exact-equal replacement is a no-op: it does not settle leases, clear pending/live terminal state, cancel provider work, or fragment an overlapping preparation. Only a different tuple performs authority replacement.
 
 #### Reconnect-finalization flow
 
@@ -467,7 +478,7 @@ async function requestReconnect(authority) {
 
 The first terminal retry is complete before `capturePreparationInput` performs any await. Target B therefore retries even when target A has five slow provider requests. A same-authority duplicate runs bounded correction: healthy live bindings are no-ops, pending attempts are not duplicated, and failed/unbound tabs can re-arm. When workspace hydration completes, `finalizeHydratedTerminals` reruns against the current authority and handles newly hydrated or still-unbound tabs.
 
-Preparation for each target progresses independently. While authority remains current, it performs its host-scoped lineage read only after every repo task reaches a terminal state: `complete`, `non-authoritative`, final `timed-out`, or `rejected`. Authority-wide `canceled`/`stale` returns without lineage or a token. A first retryable timeout is the nonterminal `retrying` state and cannot release lineage, terminal correction, sync, or token creation. The target never waits for another target's repos or lineage.
+Preparation for each target progresses independently. While authority remains current, it performs its host-scoped lineage read only after every repo task reaches a terminal state: `complete`, `non-authoritative`, final `timed-out`, `cancel-budget-exhausted`, or `rejected`. Authority-wide `canceled`/`stale` returns without lineage or a token. A first retryable timeout is the nonterminal `retrying` state and cannot release lineage, terminal correction, sync, or token creation. The target never waits for another target's repos or lineage.
 
 When authority rotates again within `RELAY_LOST_STABILIZED_MS` (currently five seconds), replace the delayed preparation with the latest authority and perform terminal finalization immediately. Only the authority that survives the stabilization window starts catalog/Git/lineage work. A same-authority wake during that window coalesces into the pending latest-authority preparation. This is damping, not an epoch-long result cache.
 
@@ -496,9 +507,17 @@ type DirectSshPreparationToken = {
   authority: DirectSshAuthority
   catalogRevision: number
   repoFingerprint: string
+  authorityRequirement: PreparationInput['authorityRequirement']
+  snapshotRevision: number | null
   outcome: 'complete' | 'degraded'
 }
+
+type SnapshotApplyToken = DirectSshPreparationToken & {
+  snapshotRevision: number
+}
 ```
+
+An unsolicited snapshot passes its revision into `prepareOnly`, so the returned token is already snapshot-bound. Reconnect preparation returns `snapshotRevision: null`; after `remoteWorkspace.get`, sync revalidates authority and creates a `SnapshotApplyToken` by copying the fetched revision onto that token. `applyRemoteWorkspaceSnapshot` accepts only `SnapshotApplyToken` and requires exact revision equality, so it cannot reuse preparation across incompatible snapshots.
 
 ### 5. Fenced worktree, catalog, and lineage merges
 
@@ -543,58 +562,68 @@ settleDirectSshPaneRetry(result: DirectSshPaneRetryResult): void
 
 Put pure projections in `src/renderer/src/store/slices/direct-ssh-terminal-recovery.ts`.
 
-`clearDirectSshTargetPtyBindings` traverses `tabsByWorktree` once, selects exact target scope, then applies the `tab.ptyId != null` predicate. It lazily clones only changed workspace arrays and maps and commits one patch. Tabs without a current `ptyId`, including those with `pendingActivationSpawn`, are untouched.
+`clearDirectSshTargetPtyBindings` traverses `tabsByWorktree` once, selects exact target scope, then applies the `tab.ptyId != null` predicate. For every affected tab the same atomic projection sets `tab.ptyId` to `null`, empties its `ptyIdsByTabId` entry, consumes `pendingActivationSpawn`, and removes pending Codex restart/restart-notice entries for the cleared live PTY. It preserves `lastKnownRelayPtyIdByTabId`, layouts, deferred SSH sessions, pending reconnect IDs, shutdown/suppression state, IDs, titles, generations, and agent state. It lazily clones only changed workspace arrays and maps, commits one patch, and triggers no activity, sorting, or metadata persistence. Tabs without a current `ptyId`, including those with `pendingActivationSpawn`, are untouched.
 
-`invalidateStaleDirectSshTargetPtyBindings` validates the authority inside the updater and clears a non-null `ptyId` when its transient `ptyAuthorityByTabId` does not equal the current authority. Snapshot-imported or legacy bindings without current-authority provenance are wake hints, not live bindings. The clear preserves the same relay-grace and orphan-safety state as disconnect clear.
+`invalidateStaleDirectSshTargetPtyBindings` validates the authority inside the updater and applies that complete atomic projection to a non-null `ptyId` when its transient `ptyAuthorityByTabId` does not equal the current authority. Snapshot-imported or legacy bindings without current-authority provenance are wake hints, not live bindings.
 
 `retryDirectSshTargetPanes` validates the exact authority inside the updater, resolves scope from that same state snapshot, applies `shouldRetryPaneSpawnOnSshReconnect` plus stale-binding evidence, excludes only current live-success and pending-attempt tab IDs, and commits one `tabsByWorktree` patch. It records a unique attempt outside the success ledger. `settleDirectSshPaneRetry` records current-authority success only after a live PTY binding is committed; failed, timed-out, superseded, or later-cleared attempts re-arm the tab.
 
 Keep `clearTabPtyId` unchanged for genuine single-PTY exits. Permanent target removal continues through `src/renderer/src/store/slices/ssh-target-cleanup.ts`, whose deletion of last-known and deferred liveness is invalid for a reconnectable disconnect.
 
-`applySshConnectionStateChange` becomes orchestration:
+`applySshConnectionStateChange` receives an explicit origin and becomes orchestration:
 
 ```ts
-const previous = getSshConnectionState(targetId)
-setSshConnectionState(targetId, state)
+type SshStateApplyOrigin = 'push' | 'initial-hydration'
 
-if (isTerminalFailure(state.status)) {
-  coordinator.invalidate(targetId)
-  clearRemoteDetectedAgents(targetId)
-  clearPortForwards(targetId)
-  setDetectedPorts(targetId, [])
-  clearDirectSshTargetPtyBindings(targetId)
-  return
-}
+const applySshConnectionStateChange = (targetId, state, origin: SshStateApplyOrigin) => {
+  const previous = getSshConnectionState(targetId)
+  setSshConnectionState(targetId, state)
 
-if (state.status === 'connected') {
-  if (!state.providerEpoch || state.connectionGeneration === undefined) {
-    void reconcileAuthorityOnce({
-      targetId,
-      initiatingEventWatermark: getStateEventWatermark(targetId),
-      initiatingState: state
-    }).then(applyAuthorityPatchIfStillCurrent)
-  } else if (
-    previous?.status !== 'connected' ||
-    previous.providerEpoch !== state.providerEpoch ||
-    previous.connectionGeneration !== state.connectionGeneration
-  ) {
-    const authority = {
-      targetId,
-      providerEpoch: state.providerEpoch,
-      connectionGeneration: state.connectionGeneration
+  if (isTerminalFailure(state.status)) {
+    coordinator.invalidate(targetId)
+    clearRemoteDetectedAgents(targetId)
+    clearPortForwards(targetId)
+    setDetectedPorts(targetId, [])
+    clearDirectSshTargetPtyBindings(targetId)
+    return
+  }
+
+  if (state.status === 'connected') {
+    if (!state.providerEpoch || state.connectionGeneration === undefined) {
+      void reconcileAuthorityOnce({
+        targetId,
+        initiatingEventWatermark: getStateEventWatermark(targetId),
+        initiatingState: state,
+        initiatingOrigin: origin
+      }).then(applyAuthorityPatchIfStillCurrent)
+    } else {
+      const authority = {
+        targetId,
+        providerEpoch: state.providerEpoch,
+        connectionGeneration: state.connectionGeneration
+      }
+
+      if (origin === 'initial-hydration') {
+        coordinator.replaceAuthority(authority)
+        void coordinator.prepareOnly({
+          ...authority,
+          authorityRequirement: 'required',
+          reason: 'initial-hydration'
+        })
+      } else if (
+        previous?.status !== 'connected' ||
+        previous.providerEpoch !== state.providerEpoch ||
+        previous.connectionGeneration !== state.connectionGeneration
+      ) {
+        void coordinator.requestReconnect(authority)
+      } else {
+        coordinator.correctUnboundTerminals(authority, 'wake-refresh')
+        void prepareAndSyncWithoutHealthyTerminalRemount({
+          ...authority,
+          reason: 'wake-refresh'
+        })
+      }
     }
-    void coordinator.requestReconnect(authority)
-  } else {
-    const authority = {
-      targetId,
-      providerEpoch: state.providerEpoch,
-      connectionGeneration: state.connectionGeneration
-    }
-    coordinator.correctUnboundTerminals(authority, 'wake-refresh')
-    void prepareAndSyncWithoutHealthyTerminalRemount({
-      ...authority,
-      reason: 'wake-refresh'
-    })
   }
 }
 ```
@@ -603,7 +632,7 @@ Increment the per-target state-event watermark before applying every push event.
 
 The terminal-failure cleanup order remains `clearRemoteDetectedAgents`, `clearPortForwards`, `setDetectedPorts([])`, then atomic PTY binding clear. Preserve the current port-broadcast race defense and detected-agent re-detection behavior.
 
-An already-connected same-authority rebroadcast is a wake refresh, not a healthy-pane remount. It performs bounded unbound/stale correction, fresh bounded preparation, and sync. Initial hydration likewise uses `prepareOnly` unless renderer observed a main-authoritative transition into `connected`. Hydrating an already-live state must not remount healthy panes. Workspace session completion invokes `finalizeHydratedTerminals` only for reconnect authorities recorded during that hydration interval, but a failed/unbound attempt remains eligible for later same-authority triggers.
+An already-connected same-authority rebroadcast is a wake refresh, not a healthy-pane remount. It performs bounded unbound/stale correction, fresh bounded preparation, and sync. Initial hydration always carries `origin: 'initial-hydration'` and uses `prepareOnly`; it is never inferred from the absence of `previous`. A bounded authority reconciliation retains the initiating origin, so filling a retained state's missing pair also cannot become a reconnect transition. Hydrating an already-live state must not remount healthy panes. Workspace session completion invokes `finalizeHydratedTerminals` only for reconnect authorities recorded during that hydration interval, but a failed/unbound attempt remains eligible for later same-authority triggers.
 
 ## Remote-workspace data flows
 
@@ -631,15 +660,17 @@ A later same-authority snapshot always receives a new preparation attempt after 
 
 Remote snapshot identity is repo-qualified where the schema provides repo identity: resolve by `(executionHostId, repoId, normalizedPath)` and fail closed on ambiguity. For legacy path-only entries, retain the existing resolver only when the path has exactly one candidate in the exact target scope. Two worktrees at the same absolute host path were not proven producible, so this is a robustness invariant rather than a claim that current storage necessarily creates that collision.
 
+The existing `buildWorktreeByIdIndex` and `reconnectPersistedTerminals` path retains first-wins ID-only compatibility for its current callers. Direct-SSH snapshot apply must pass host-qualified worktree refs through a dedicated overload or pre-resolved map; it cannot hand raw IDs back to an ID-only lookup and recover authority afterward.
+
 ## Failure handling
 
 - **Unknown authority:** reconcile once behind the per-target arrival watermark; then fail closed with a retryable diagnostic. Do not use a renderer counter or apply the reply's status.
 - **Catalog timeout/failure:** retain cached exact-owner scope, record degradation, and continue target preparation and already-completed terminal recovery.
 - **One repo is non-authoritative:** keep its safe metadata fallback separate from operational failure and do not authoritatively delete rows.
-- **One repo times out:** the provider invocation settles locally and sends best-effort cancel. On the first retryable timeout, keep the logical repo task and target preparation barrier pending in `retrying`, then requeue once at the target lane tail. A second timeout is final and degrades the repo. If current-provider cancel debt makes retry admission impossible, finalize as `retry-budget-exhausted` instead of producing an early token or waiting forever. None of these states blocks another target's terminal retry.
+- **One repo times out:** the provider invocation settles locally and sends best-effort cancel. On the first retryable timeout, keep the logical repo task and target preparation barrier pending in `retrying`, then requeue once at the target lane tail. A second timeout is final and degrades the repo. If current-provider cancel debt denies retry admission, settle the logical task as terminal `cancel-budget-exhausted`; this releases one degraded preparation outcome rather than an early-success token or an indefinite wait. None of these states blocks another target's terminal retry.
 - **One repo rejects:** locally settle it without retry unless classified by the existing narrow transient predicate; operational rejection remains distinct from timeout and non-authoritative data.
 - **Lineage timeout/failure:** preserve current lineage, mark target preparation degraded, and continue sync with exact cached worktree scope.
-- **Authority advance or target invalidation:** synchronously cancel queued work, settle obsolete local waiter leases, abort unshared in-flight provider request IDs, rotate renderer in-flight inputs and terminal-attempt state, and reject late results at both main and renderer fences. The new authority begins terminal finalization without waiting for relay acknowledgement.
+- **Authority advance or target invalidation:** synchronously cancel queued work, settle obsolete local waiter leases, send exactly one cancellation for every affected in-flight provider request ID, rotate renderer in-flight inputs and terminal-attempt state, and reject late results at both main and renderer fences. The new authority begins terminal finalization without waiting for relay acknowledgement.
 - **Relay flapping:** finalize terminals for every new authority, but replace/defer full preparation until the latest authority survives `RELAY_LOST_STABILIZED_MS`.
 - **Missed disconnect/stale binding:** clear only PTY bindings whose transient binding authority is absent or old, retain last-known relay identifiers, then retry under the new authority.
 - **Failed terminal spawn/reattach:** settle the attempt as failed, remove it from pending/success state, and allow rate-limited correction on later preparation, hydration, snapshot, or wake triggers.
@@ -659,7 +690,7 @@ Fields:
 - mode and reason;
 - terminal tabs considered/retried and terminal-finalization duration;
 - catalog outcome and duration;
-- repo tasks completed, non-authoritative, retrying, final timed-out, retry-budget-exhausted, canceled, stale, and rejected;
+- repo tasks completed, non-authoritative, retrying, final timed-out, cancel-budget-exhausted, canceled, stale, and rejected;
 - direct-scheduler queue-wait and provider-execution duration distributions;
 - timeout retry count, local waiter settlements, cancel debt, and replacement admissions delayed by cancel debt;
 - peak locally unsettled coordinator-owned detected-worktree concurrency and estimated late-work allowance;
@@ -697,7 +728,7 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - Duplicate repo IDs never trigger cross-host repo-prefix lineage pruning.
 - Legacy lineage prunes under a unique repo owner, ambiguous legacy rows are preserved, and an authoritative scan backfills `meta.hostId`.
 - `sshConnectionStatesEqual`, retained-payload admission, public projection, preload push/get, startup reconnect, runtime retained/client payloads, renderer/runtime stores, and state builders preserve both authority fields.
-- An epoch-only replacement broadcast and a generation-only compatibility broadcast each publish exactly once and are observable by fences; an exact duplicate is a no-op.
+- Main-originated broadcasts always publish the complete authority pair. Malformed epoch-only or generation-only retained inputs are rejected; compatibility push/get inputs can only remain `authority-unknown` for bounded reconciliation and perform no authoritative mutation. One valid pair change publishes once and an exact duplicate is a no-op.
 - Retained-state admission accepts a bounded valid epoch, rejects malformed/oversized epochs, and never strips a valid authority component.
 - The web preload compatibility overload preserves requested-host echo for runtime reads; this does not enable direct-SSH coordination in paired web clients.
 - A stale `ssh:getState` reply arriving after a disconnect/reconnect push cannot change status or fill authority; a same-watermark reply can fill only missing authority.
@@ -705,6 +736,7 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 ### Renderer worktree/catalog/lineage fences
 
 - The coordinator in-flight key differs by host, full authority, catalog revision, and authoritative requirement; the shared coalescer key remains unchanged.
+- Inputs that differ only by `authorityRequirement` do not join, and the resulting token echoes that exact requirement.
 - Exact overlapping requests join; the same key after completion runs again.
 - An old result after disconnect/reconnect or relay-only replacement causes zero store publications.
 - Git identity, hosted-review links, purge state, both worktree maps, and best-effort lineage remain byte-identical on stale results.
@@ -712,6 +744,7 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - A target-scoped catalog fetch cannot be superseded by focused-runtime `fetchRepos`.
 - Host-scoped lineage deletes a stale direct SSH row while preserving local, another SSH target, runtime, and unknown-owner rows.
 - Runtime-focused UI state cannot redirect direct SSH catalog, worktree, or lineage ownership.
+- An ID-only first-wins hydration index containing the same worktree ID under SSH A and SSH B is never authoritative for direct reconnect; a target-B snapshot reattaches only the host-qualified B row or fails closed.
 - Pre-catalog direct SSH scope with a focused runtime treats focus fallback as ambiguous and still recovers tabs supported by explicit PTY/host provenance.
 - An explicit `ssh:B` worktree with repo-derived `ssh:A` is `contradictory-owner` for both targets and remains byte-identical. The inverse mismatch, an SSH host plus explicit runtime owner, and conflicting folder group/repo connections fail the same way.
 - Repo-derived ownership is accepted only when explicit worktree ownership is absent; adding a conflicting explicit owner converts the same row from accepted to preserved/contradictory without cross-host deletion.
@@ -725,12 +758,13 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - Round-robin admission prevents a large target from continually reoccupying every released slot.
 - Peak coordinator-owned detected-worktree calls is five; runtime/sidebar activity can raise total app concurrency without failing this assertion.
 - Joined consumers receive distinct waiter lease IDs and one shared provider request ID. Canceling one settles only that lease while the other completes from the original call; no provider cancel is sent.
-- Last-waiter and authority cancellation send exactly one provider request ID. A waiter lease ID presented to main is rejected and cannot abort provider work.
+- Last-waiter release sends exactly one cancellation for that shared provider request ID. Authority invalidation sends exactly one cancellation for each affected in-flight provider request, including multi-repo preparation; no cancellation is sent merely because one lease leaves while another current-authority lease still owns that invocation. A waiter lease ID presented to main is rejected and cannot abort provider work.
 - A coordinator lease joining sidebar/filesystem work cannot abort that work when the coordinator is superseded; the remaining non-coordinator lease keeps the provider request alive.
 - A timeout sends `rpc.cancel`, settles locally, and releases its local slot without a relay acknowledgement.
-- Repeated timeout replacements never exceed the two-call cancel-debt allowance; excess work waits outside local slots and is reported separately.
+- Repeated timeout replacements never exceed the two-call cancel-debt allowance; denied work settles as terminal `cancel-budget-exhausted` and is reported separately.
 - After a first retryable timeout, the repo task is `retrying`: lineage calls, preparation tokens, sync, and snapshot apply remain at zero until the retry settles.
-- A successful retry then releases one lineage read and one token; a second timeout or retry-budget exhaustion releases a degraded result without starving another target.
+- A successful retry then releases one lineage read and one token; a second timeout or cancel-budget exhaustion releases a degraded result without starving another target.
+- An exact-equal `replaceAuthority` call preserves every pending lease, live binding, and overlapping preparation and sends no cancellation.
 - A same-authority reconnect rechecks terminals but does not rebump a healthy current-authority binding.
 - A newly hydrated tab receives one retry later under the same authority.
 - A tab whose exact ownership becomes visible during that target's preparation receives one retry without delaying the first terminal finalization.
@@ -750,6 +784,7 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - Many live tabs/worktrees clear in one store publication; a second clear is a true no-op.
 - Only tabs with `tab.ptyId != null` are changed.
 - A null-PTY tab with `pendingActivationSpawn` remains byte-identical.
+- A live-PTY tab consumes `pendingActivationSpawn` in the same patch that clears its tab and split-pane PTY indexes.
 - `lastKnownRelayPtyIdByTabId` survives and the `#9911` orphan predicate remains reconnectable.
 - Live split-pane PTY indexes and Codex restart metadata clear.
 - Layouts, deferred sessions, pending reconnect IDs, shutdown/suppression state, titles, and agent state remain unchanged.
@@ -762,6 +797,7 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - Two automatic correction attempts per rolling 30 seconds are allowed; later triggers wait for token refill rather than permanently ledgering the tab.
 - Disconnect retains exact existing ordering and effects for `clearRemoteDetectedAgents`, `clearPortForwards`, `setDetectedPorts([])`, and atomic PTY clear.
 - Disconnect and reconnect emit zero paired `session.tabs.close`/`closeLifecycle`, provider shutdowns, or process signals.
+- A manually parked direct-SSH worktree follows the same store patch and retry eligibility without invoking parking, close, or layout mutation.
 
 ### Remote-workspace and hydration integration
 
@@ -770,13 +806,14 @@ Implementation PRs register the worktree scan-count, host/authority, timeout-bar
 - A later same-authority snapshot referencing a newly created worktree resolves and imports its tabs.
 - Preparation-only snapshot handling never bumps terminal generations.
 - Preparation-only means no coordinator generation bump; existing snapshot-driven terminal reattach remains and is finalized afterward.
-- Initial hydration of an already-live target does not remount healthy panes.
+- Initial hydration with no previous renderer state follows the explicit `initial-hydration` origin into `prepareOnly` and performs zero reconnect retries; reconciliation retains that origin.
 - Reconnect finalized before session hydration retries newly hydrated tabs exactly once afterward.
 - Immediate finalization bumps a tab, then a snapshot with the same stable tab ID and an older/absent generation cannot reduce the local generation or suppress correction.
 - Snapshot hydration that lands after a newer local retry preserves the newer terminal-recovery revision, pending attempt, and current binding provenance.
 - Snapshot-imported `ptyId` without current-authority live evidence remains retry-eligible; successful `reconnectPersistedTerminals` records it live, while failure re-arms it.
 - Same-authority wake rebroadcast performs bounded fresh discovery.
 - Revision-zero sync captures `hasLocalTabs` before `remoteWorkspace.get`, uploads only on that capture, and revalidates authority before publish.
+- Snapshot apply rejects a token whose `snapshotRevision` differs, and reconnect sync can create a `SnapshotApplyToken` only from the snapshot fetched by that same fenced operation.
 - Repo-qualified snapshot mapping keeps same-named repo paths isolated; a legacy path-only entry applies only with one exact-target candidate and otherwise fails closed.
 - Folder workspace keys never enter snapshot projection.
 - Hydration timeout does not undo terminal recovery.
@@ -813,7 +850,7 @@ Seed direct SSH targets, a runtime environment, sidebar refreshes, worktrees, fo
 
 Land in bisectable stages:
 
-1. Add the opaque epoch and `rotateSshProviderAuthority`, expand `connectionGeneration` rotation to the same transition set, and inventory every state equality/copy/preload/retained/reconciliation boundary. Land epoch-only publication, retained-admission, stale-reconciliation, provider-before-broadcast, and old-mutation-expectation tests before any coordinator routing.
+1. Add the opaque epoch and `rotateSshProviderAuthority`, expand `connectionGeneration` rotation to the same transition set, and inventory every state equality/copy/preload/retained/reconciliation boundary. Land complete-pair publication, malformed partial-authority rejection, retained-admission, stale-reconciliation, provider-before-broadcast, and old-mutation-expectation tests before any coordinator routing.
 2. Add host-qualified detected-worktree and lineage IPC, discriminated authoritative response admission, exact main provider selection, main-owned 30-second deadline, provider-request cancellation, and main pre-mutation fences. Preserve the web/runtime overload without enabling direct-SSH web coordination. Keep the coordinator disabled.
 3. Refactor renderer worktree/catalog/lineage reads to immutable results with pre-mutation full-authority fences. Add the host-scoped catalog lane independent of focused-runtime supersession, all-provenance contradiction rejection, legacy lineage host backfill, and shared coalescer leases with distinct waiter/provider IDs.
 4. Add exact target scope, atomic disconnect clear, stale-authority binding invalidation, retry-attempt settlement, and transient binding provenance. Switch disconnect and reconnect terminal handling together so Git/folder clear-retry symmetry and detected-agent/port cleanup remain intact in every commit.
@@ -833,7 +870,7 @@ Release checks:
 - terminal finalization is scheduled before provider discovery and is not delayed by another target or runtime/sidebar work;
 - p95/p99 direct scheduler queue wait and provider duration, plus timeout/retry/cancel-debt rates, are reported separately from same-relay non-coordinator traffic;
 - peak coordinator-owned direct SSH detected-worktree concurrency is at most five;
-- waiter cancellation is lease-local, only last-waiter/authority cancellation sends the distinct provider request ID, provider cancellation settles without relay acknowledgement, and cancel debt remains bounded;
+- waiter cancellation is lease-local, last-waiter release sends one cancellation for its provider request, authority invalidation sends exactly one per affected in-flight provider request, provider cancellation settles without relay acknowledgement, and cancel debt remains bounded;
 - no lineage read, preparation token, or sync starts while a first timed-out repo remains retrying;
 - authority advance invalidates old queued/in-flight work and relay flapping produces only one stable preparation wave;
 - missed disconnect, failed spawn, and hydration overwrite cases converge through bounded same-authority correction;

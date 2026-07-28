@@ -387,9 +387,35 @@ describe('Linear teams', () => {
           { id: 'user-2' },
           { id: 'user-4' }
         ])
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('viewer lookup'),
+          expect.any(Error)
+        )
       } finally {
         warn.mockRestore()
       }
+    })
+
+    it('shares one in-flight viewer lookup across concurrent member fetches', async () => {
+      let resolveViewer: (value: { id: string }) => void = () => {}
+      const viewer = vi.fn().mockImplementation(
+        () =>
+          new Promise<{ id: string }>((resolve) => {
+            resolveViewer = resolve
+          })
+      )
+      getClients.mockReturnValue([makeMembersEntry({ viewer })])
+      const { getTeamMembersOrThrow } = await import('./teams')
+
+      const first = getTeamMembersOrThrow('team-1', 'workspace-1')
+      const second = getTeamMembersOrThrow('team-1', 'workspace-1')
+      await vi.waitFor(() => expect(viewer).toHaveBeenCalledTimes(1))
+      resolveViewer({ id: 'user-3' })
+
+      const expectedOrder = [{ id: 'user-3' }, { id: 'user-1' }, { id: 'user-2' }, { id: 'user-4' }]
+      await expect(first).resolves.toMatchObject(expectedOrder)
+      await expect(second).resolves.toMatchObject(expectedOrder)
+      expect(viewer).toHaveBeenCalledTimes(1)
     })
 
     it('caches the viewer id per workspace credential revision', async () => {
@@ -408,7 +434,7 @@ describe('Linear teams', () => {
     })
 
     it('sorts members deterministically with duplicate display names', async () => {
-      const { sortMembersViewerFirst } = await import('./teams')
+      const { sortMembersViewerFirst } = await import('./team-member-order')
 
       expect(sortMembersViewerFirst([], null)).toEqual([])
       expect(

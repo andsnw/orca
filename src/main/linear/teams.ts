@@ -10,55 +10,13 @@ import type {
 import { acquire, release } from './linear-request-concurrency'
 import { clearToken } from './linear-token-store'
 import { getClients, isAuthError } from './client'
-import type { LinearClientForWorkspace } from './client'
+import { getCachedViewerId, sortMembersViewerFirst } from './team-member-order'
 import {
   fetchAllTeamLabels,
   fetchAllTeamMembers,
   fetchAllTeamsForWorkspace,
   fetchAllTeamStates
 } from './linear-team-pages'
-
-// Why: one viewer lookup per workspace credential is enough for member ordering;
-// entries are replaced on credential rotation so a re-auth as another user refreshes.
-const viewerIdCache = new Map<string, { revision: number; viewerId: string }>()
-
-async function getCachedViewerId(entry: LinearClientForWorkspace): Promise<string | null> {
-  const revision = entry.workspace.credentialRevision ?? 0
-  const cached = viewerIdCache.get(entry.workspace.id)
-  if (cached && cached.revision === revision) {
-    return cached.viewerId
-  }
-
-  await acquire()
-  try {
-    const viewer = await entry.client.viewer
-    viewerIdCache.set(entry.workspace.id, { revision, viewerId: viewer.id })
-    return viewer.id
-  } catch (error) {
-    // Member lists must not fail because the viewer lookup did.
-    console.warn('[linear] viewer lookup for member ordering failed:', error)
-    return null
-  } finally {
-    release()
-  }
-}
-
-export function sortMembersViewerFirst(
-  members: LinearMember[],
-  viewerId: string | null
-): LinearMember[] {
-  return [...members].sort((a, b) => {
-    if (viewerId) {
-      if (a.id === viewerId) {
-        return b.id === viewerId ? 0 : -1
-      }
-      if (b.id === viewerId) {
-        return 1
-      }
-    }
-    return a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id)
-  })
-}
 
 export async function listTeams(
   workspaceId?: LinearWorkspaceSelection | null

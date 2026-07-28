@@ -370,6 +370,20 @@ const agentErrorSchema = z
 // Why: daemon start-failure signal (fleet-wide outage like v1.4.129-rc.1); enum-only so raw stderr never reaches the wire.
 const daemonStartFailedSchema = z.object({ error_class: errorClassSchema }).strict()
 
+export const runtimeRpcStartErrorClassSchema = z.enum([
+  'permission_denied',
+  'address_in_use',
+  'storage_unavailable',
+  'invalid_path',
+  'unknown'
+])
+export type RuntimeRpcStartErrorClass = z.infer<typeof runtimeRpcStartErrorClassSchema>
+
+// Why: runtime discovery failures can contain user paths; keep telemetry to closed filesystem/socket categories.
+const runtimeRpcStartFailedSchema = z
+  .object({ error_class: runtimeRpcStartErrorClassSchema })
+  .strict()
+
 // Why: daemon replace/retire lifecycle signal — issue #7936 was undiagnosable without asking a user for daemon.log.
 // Enum-only + bucketed session count so no paths, raw versions, or exact counts reach the wire.
 // The union keeps each reason pinned to its transition, so a death can't be reported as a replace.
@@ -1327,6 +1341,7 @@ export const eventSchemas = {
 
   daemon_start_failed: daemonStartFailedSchema,
   daemon_lifecycle: daemonLifecycleSchema,
+  runtime_rpc_start_failed: runtimeRpcStartFailedSchema,
 
   codex_trust_grant: codexTrustGrantSchema,
 

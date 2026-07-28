@@ -8,7 +8,7 @@ describe('startup ordering', () => {
     const attachStart = source.indexOf('attachMainWindowServices(')
     const attachEnd = source.indexOf('rateLimits.attach(window)', attachStart)
     const attachBlock = source.slice(attachStart, attachEnd)
-    const desktopStart = source.indexOf('const [win] = await Promise.all([')
+    const desktopStart = source.indexOf('const [win, runtimeRpcStartResult] = await Promise.all([')
     const desktopEnd = source.indexOf('// Why: the macOS notification permission dialog')
     const desktopStartup = source.slice(desktopStart, desktopEnd)
 
@@ -25,6 +25,13 @@ describe('startup ordering', () => {
 
     expect(windowIndex).toBeGreaterThanOrEqual(0)
     expect(Math.max(rpcStartIndex, legacyRpcStartIndex)).toBeGreaterThanOrEqual(0)
+    expect(desktopStartup).toContain('recordRuntimeRpcStartFailure(error)')
+    expect(desktopStartup).toContain(
+      'void showRuntimeRpcStartupFailureDialog(win, runtimeRpcStartResult.error)'
+    )
+    expect(desktopStartup).not.toContain(
+      "console.error('[runtime] Failed to start local RPC transport:'"
+    )
   })
 
   it('bounds WSL reconciliation before serve RPC while leaving desktop startup independent', () => {

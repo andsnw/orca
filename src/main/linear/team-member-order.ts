@@ -41,6 +41,10 @@ export async function getCachedViewerId(entry: LinearClientForWorkspace): Promis
   return lookup
 }
 
+// Why: host-default collators differ across macOS, Linux, and remote hosts; a
+// pinned collator keeps member ordering identical everywhere Orca runs.
+const memberNameCollator = new Intl.Collator('en', { sensitivity: 'variant' })
+
 export function sortMembersViewerFirst(
   members: LinearMember[],
   viewerId: string | null
@@ -54,6 +58,10 @@ export function sortMembersViewerFirst(
         return 1
       }
     }
-    return a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id)
+    return (
+      memberNameCollator.compare(a.displayName, b.displayName) ||
+      // Ordinal id tie-break: locale-independent and stable for equal names.
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    )
   })
 }

@@ -151,12 +151,7 @@ async function readTeamMembersViewerFirst(
     return []
   }
   const viewerId = await getCachedViewerId(entry)
-  const members = await readTeamResource(
-    teamId,
-    workspaceId,
-    fetchAllTeamMembers,
-    fallbackWarning
-  )
+  const members = await readTeamResource(teamId, workspaceId, fetchAllTeamMembers, fallbackWarning)
   return sortMembersViewerFirst(members, viewerId)
 }
 

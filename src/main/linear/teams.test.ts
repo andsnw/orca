@@ -101,7 +101,8 @@ function makeEntry(
 function makeTeamLookupEntry(
   workspaceId: string,
   organizationName: string,
-  teamNode: unknown
+  teamNode: unknown,
+  options?: { viewer?: () => Promise<{ id: string }>; credentialRevision?: number }
 ): LinearClientForWorkspace {
   return {
     workspace: {
@@ -109,10 +110,14 @@ function makeTeamLookupEntry(
       organizationId: workspaceId,
       organizationName,
       displayName: 'Ada',
-      email: 'ada@example.com'
+      email: 'ada@example.com',
+      credentialRevision: options?.credentialRevision
     },
     client: {
-      team: vi.fn().mockResolvedValue(teamNode)
+      team: vi.fn().mockResolvedValue(teamNode),
+      get viewer() {
+        return options?.viewer ? options.viewer() : Promise.reject(new Error('no viewer mock'))
+      }
     }
   } as unknown as LinearClientForWorkspace
 }
@@ -251,7 +256,14 @@ describe('Linear teams', () => {
           [makeMember('user-3', 'Linus')]
         ])
       )
-    const entry = makeTeamLookupEntry('workspace-1', 'Workspace', { members })
+    const entry = makeTeamLookupEntry(
+      'workspace-1',
+      'Workspace',
+      { members },
+      {
+        viewer: () => Promise.resolve({ id: 'user-1' })
+      }
+    )
     getClients.mockReturnValue([entry])
     const { getTeamMembersOrThrow } = await import('./teams')
 
@@ -281,6 +293,103 @@ describe('Linear teams', () => {
 
     expect(entry.client.team).toHaveBeenCalledWith('team-1')
     expect(members).toHaveBeenCalledWith({ first: 100 })
+  })
+
+  describe('viewer-first member ordering', () => {
+    beforeEach(() => {
+      vi.resetModules()
+    })
+
+    function makeMembersEntry(options?: {
+      viewer?: () => Promise<{ id: string }>
+      credentialRevision?: number
+      memberPages?: MemberNode[][]
+    }): LinearClientForWorkspace {
+      const members = vi.fn().mockResolvedValue(
+        makeConnection(
+          options?.memberPages ?? [
+            [makeMember('user-1', 'brian'), makeMember('user-2', 'pika')],
+            [makeMember('user-3', 'andrew'), makeMember('user-4', 'sean')]
+          ]
+        )
+      )
+      return makeTeamLookupEntry('workspace-1', 'Workspace', { members }, options)
+    }
+
+    it('pins the viewer first and alpha-sorts the rest', async () => {
+      const viewer = vi.fn().mockResolvedValue({ id: 'user-3' })
+      getClients.mockReturnValue([makeMembersEntry({ viewer })])
+      const { getTeamMembersOrThrow } = await import('./teams')
+
+      await expect(getTeamMembersOrThrow('team-1', 'workspace-1')).resolves.toMatchObject([
+        { id: 'user-3', displayName: 'andrew' },
+        { id: 'user-1', displayName: 'brian' },
+        { id: 'user-2', displayName: 'pika' },
+        { id: 'user-4', displayName: 'sean' }
+      ])
+    })
+
+    it('alpha-sorts when the viewer is not a team member', async () => {
+      const viewer = vi.fn().mockResolvedValue({ id: 'user-elsewhere' })
+      getClients.mockReturnValue([makeMembersEntry({ viewer })])
+      const { getTeamMembers } = await import('./teams')
+
+      await expect(getTeamMembers('team-1', 'workspace-1')).resolves.toMatchObject([
+        { id: 'user-3' },
+        { id: 'user-1' },
+        { id: 'user-2' },
+        { id: 'user-4' }
+      ])
+    })
+
+    it('falls back to alpha order when the viewer lookup fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const viewer = vi.fn().mockRejectedValue(new Error('viewer down'))
+        getClients.mockReturnValue([makeMembersEntry({ viewer })])
+        const { getTeamMembersOrThrow } = await import('./teams')
+
+        await expect(getTeamMembersOrThrow('team-1', 'workspace-1')).resolves.toMatchObject([
+          { id: 'user-3' },
+          { id: 'user-1' },
+          { id: 'user-2' },
+          { id: 'user-4' }
+        ])
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('caches the viewer id per workspace credential revision', async () => {
+      const viewer = vi.fn().mockResolvedValue({ id: 'user-3' })
+      getClients.mockReturnValue([makeMembersEntry({ viewer, credentialRevision: 1 })])
+      const { getTeamMembersOrThrow } = await import('./teams')
+
+      await getTeamMembersOrThrow('team-1', 'workspace-1')
+      await getTeamMembersOrThrow('team-1', 'workspace-1')
+      expect(viewer).toHaveBeenCalledTimes(1)
+
+      // Credential rotation invalidates the cached viewer id.
+      getClients.mockReturnValue([makeMembersEntry({ viewer, credentialRevision: 2 })])
+      await getTeamMembersOrThrow('team-1', 'workspace-1')
+      expect(viewer).toHaveBeenCalledTimes(2)
+    })
+
+    it('sorts members deterministically with duplicate display names', async () => {
+      const { sortMembersViewerFirst } = await import('./teams')
+
+      expect(sortMembersViewerFirst([], null)).toEqual([])
+      expect(
+        sortMembersViewerFirst(
+          [
+            { id: 'user-b', displayName: 'sam' },
+            { id: 'user-a', displayName: 'sam' },
+            { id: 'user-c', displayName: 'alex' }
+          ],
+          'user-b'
+        )
+      ).toMatchObject([{ id: 'user-b' }, { id: 'user-c' }, { id: 'user-a' }])
+    })
   })
 
   it('surfaces Linear credential decrypt errors on active team reads', async () => {
